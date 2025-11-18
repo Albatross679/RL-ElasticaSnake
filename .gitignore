@@ -1,7 +1,9 @@
 # Ignore everything
 # *
 .venv/
-
+.DS_Store
+logs/
+Training/
 
 # But don't ignore this .gitignore file itself
 !.gitignore
