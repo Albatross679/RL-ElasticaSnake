@@ -110,7 +110,7 @@ def main():
     
     # Add checkpoint callback to save model periodically (every 10k timesteps)
     checkpoint_callback = OverwriteCheckpointCallback(
-        save_freq=config.TRAIN_CONFIG.get("checkpoint_freq", 10_000),
+        checkpoint_freq=config.TRAIN_CONFIG.get("checkpoint_freq", 10_000),
         save_path=config.PATHS["model_dir"],
         filename=config.PATHS.get("checkpoint_name", "checkpoint"),
         verbose=1,

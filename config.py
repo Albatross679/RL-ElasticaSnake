@@ -24,7 +24,7 @@ TRAIN_CONFIG = {
                     #    "alignment_streak",
                     #    "alignment_goal_met"
                        ],
-    "save_freq": 100,  # Save every N episodes
+    "save_freq": 100,  # Save every N timesteps for training snapshots
     "save_steps": True,  # Whether to save step-level data
     "checkpoint_freq": 10_000,  # Timesteps between checkpoint saves
 }
