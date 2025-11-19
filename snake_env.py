@@ -94,7 +94,7 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         target = np.array([1.0, 0.0, 1.0], dtype=np.float64)
         self.target_direction = target / (np.linalg.norm(target) + 1e-12)
-        self.required_alignment_steps = 15
+        self.required_alignment_steps = 50
         self.alignment_angle_tolerance = np.deg2rad(5.0)
         self._alignment_dot_threshold = np.cos(self.alignment_angle_tolerance)
         self.alignment_speed_tol = 1e-4
@@ -104,12 +104,13 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         self.reward_weights = {
             "forward_progress": 1.0,
-            "lateral_penalty": 0.2,
+            "lateral_penalty": 1, #0.2,
             "curvature_penalty": 0.05,
             "energy_penalty": 2.0e4,
             "smoothness_penalty": 5.0e3,
             "alignment_bonus": 0.5,
-            "streak_bonus": 1.0,
+            "streak_bonus": 100, #1.0
+            "projected_speed": 2.0,
         }
         self._prev_torque_coeffs = None
 
@@ -489,13 +490,16 @@ class BaseContinuumSnakeEnv(gym.Env):
             if self._alignment_streak >= self.required_alignment_steps:
                 alignment_bonus += self.reward_weights["streak_bonus"]
 
+        projected_speed_reward = self.reward_weights["projected_speed"] * float(self.velocity_projection)
+
         reward_terms = {
             "forward_progress": float(forward_term),
             "lateral_penalty": float(lateral_penalty),
             "curvature_penalty": float(curvature_penalty),
-            "energy_penalty": float(energy_penalty),
+            # "energy_penalty": float(energy_penalty),
             "smoothness_penalty": float(smoothness_penalty),
             "alignment_bonus": float(alignment_bonus),
+            "projected_speed": float(projected_speed_reward),
         }
 
         self.reward = float(sum(reward_terms.values()))

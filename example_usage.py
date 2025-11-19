@@ -62,7 +62,7 @@ def example_training():
     
     env = create_environment()
     model = PPO("MlpPolicy", env, verbose=1)
-    callback = RewardCallback(print_freq=5, step_print_interval=20)
+    callback = RewardCallback(print_freq=5)
     model.learn(total_timesteps=1000, callback=callback)
     model.save("my_model")
     """)

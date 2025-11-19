@@ -5,12 +5,14 @@ Run this script to continue training a previously saved PPO agent.
 
 import os
 import sys
+import signal
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 
 from snake_env import FixedWavelengthContinuumSnakeEnv
-from callbacks import RewardCallback
+from callbacks import RewardCallback, OverwriteCheckpointCallback
+from stable_baselines3.common.callbacks import CallbackList
 import config
 import time
 
@@ -30,12 +32,45 @@ def create_environment():
     return env
 
 
+# Global variables for signal handling
+model = None
+env = None
+start_time = None
+
+def signal_handler(signum, frame):
+    """Handle termination signals (SIGTERM from SLURM, SIGINT from Ctrl+C)"""
+    print(f"\n\nReceived signal {signum}. Saving model and exiting gracefully...", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        if model is not None:
+            model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
+            model.save(model_path)
+            print(f"Model saved to {model_path}", flush=True)
+        if env is not None:
+            env.close()
+        if start_time is not None:
+            elapsed = time.time() - start_time
+            print(f"Total training time: {elapsed:.1f} seconds ({elapsed/60:.2f} minutes)", flush=True)
+    except Exception as e:
+        print(f"Error during cleanup: {e}", flush=True, file=sys.stderr)
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        sys.exit(0)
+
+
 def main():
-    start = time.time()
+    global model, env, start_time
+    start_time = time.time()
     """Main training function"""
     print("=" * 70)
     print("Resuming RL Training for Continuum Snake")
     print("=" * 70)
+    
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, signal_handler)  # SLURM sends SIGTERM on scancel
+    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C sends SIGINT
     
     # Create directories
     os.makedirs(config.PATHS["log_dir"], exist_ok=True)
@@ -44,15 +79,33 @@ def main():
     # Determine model path
     if len(sys.argv) > 1:
         model_path = sys.argv[1]
+        # If user provided path doesn't have .zip, check with .zip extension
+        if not os.path.exists(model_path) and not model_path.endswith('.zip'):
+            model_path_zip = model_path + '.zip'
+            if os.path.exists(model_path_zip):
+                model_path = model_path_zip
     else:
         # Use default model path from config
         model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
+        # Check with .zip extension (Stable Baselines3 saves with .zip)
+        if not os.path.exists(model_path):
+            model_path_zip = model_path + '.zip'
+            if os.path.exists(model_path_zip):
+                model_path = model_path_zip
     
     # Check if model file exists
     if not os.path.exists(model_path):
         print(f"\nError: Model file not found at {model_path}")
         print("Please provide a valid model path as an argument, or ensure the default model exists.")
         print(f"Usage: python resume_train.py [model_path]")
+        # List available models
+        model_dir = config.PATHS["model_dir"]
+        if os.path.exists(model_dir):
+            available_models = [f for f in os.listdir(model_dir) if f.endswith('.zip')]
+            if available_models:
+                print(f"\nAvailable models in {model_dir}:")
+                for model_file in available_models:
+                    print(f"  - {os.path.join(model_dir, model_file)}")
         sys.exit(1)
     
     # Create environment
@@ -73,11 +126,26 @@ def main():
     print(f"\nLoading PPO model from {model_path}...")
     model = PPO.load(model_path, env=env)
     
-    # Create callback
-    callback = RewardCallback(
+    # Create callbacks
+    reward_callback = RewardCallback(
         print_freq=config.TRAIN_CONFIG["print_freq"],
-        step_print_interval=config.TRAIN_CONFIG["step_print_interval"]
+        step_info_keys=config.TRAIN_CONFIG["step_info_keys"],
+        save_dir=config.PATHS["log_dir"],  # Save training data to log directory
+        save_freq=config.TRAIN_CONFIG.get("save_freq", 100),  # Save every N episodes
+        save_steps=config.TRAIN_CONFIG.get("save_steps", True),  # Whether to save step-level data
     )
+    
+    # Add checkpoint callback to save model periodically (every 10 iterations = ~27k timesteps)
+    checkpoint_callback = OverwriteCheckpointCallback(
+        save_freq=config.TRAIN_CONFIG.get("checkpoint_freq", 10_000),
+        save_path=config.PATHS["model_dir"],
+        filename=config.PATHS.get("checkpoint_name", "checkpoint"),
+        verbose=1,
+        checkpoint_hooks=[reward_callback.checkpoint_hook],
+    )
+    
+    # Combine callbacks
+    callback = CallbackList([reward_callback, checkpoint_callback])
     
     # Train model
     print(f"\nResuming training for {config.TRAIN_CONFIG['total_timesteps']} timesteps...")
@@ -93,16 +161,15 @@ def main():
         print("\nTraining interrupted by user. Saving model...")
     
     # Save model
-    save_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
-    model.save(save_path)
-    print(f"\nTraining finished! Model saved to {save_path}")
+    model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
+    model.save(model_path)
+    print(f"\nTraining finished! Model saved to {model_path}")
     
     # Close environment
     env.close()
     
     print("\nTraining complete!")
-    end = time.time()
-    elapsed = end - start
+    elapsed = time.time() - start_time
     print(f"Total training time: {elapsed:.1f} seconds ({elapsed/60:.2f} minutes)")
 
 
