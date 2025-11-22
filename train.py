@@ -9,7 +9,7 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 
-from snake_env import FixedWavelengthContinuumSnakeEnv
+from snake_env import FixedWavelengthXZOnlyContinuumSnakeEnv
 from callbacks import RewardCallback, OverwriteCheckpointCallback
 from stable_baselines3.common.callbacks import CallbackList
 import config
@@ -18,7 +18,7 @@ import time
 
 def create_environment():
     """Create and configure the environment"""
-    env = FixedWavelengthContinuumSnakeEnv(
+    env = FixedWavelengthXZOnlyContinuumSnakeEnv(
         fixed_wavelength=config.ENV_CONFIG["fixed_wavelength"],
         obs_keys=config.ENV_CONFIG["obs_keys"],
     )
@@ -27,6 +27,7 @@ def create_environment():
     env.period = config.ENV_CONFIG["period"]
     env.ratio_time = config.ENV_CONFIG["ratio_time"]
     env.rut_ratio = config.ENV_CONFIG["rut_ratio"]
+    env.reward_weights = config.REWARD_WEIGHTS
     
     return env
 
@@ -61,6 +62,9 @@ def main():
     model = PPO(
         config.MODEL_CONFIG["policy"],
         env,
+        gamma=0.99,      # <--- The Discount Factor
+        gae_lambda=0.95, # <--- The GAE Parameter
+        n_steps=2048,    # <--- The Rollout Buffer Size
         verbose=config.MODEL_CONFIG["verbose"],
         # tensorboard_log=config.PATHS["log_dir"]  # Uncomment for tensorboard logging
     )

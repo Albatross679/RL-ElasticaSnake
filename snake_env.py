@@ -13,6 +13,149 @@ from numpy.typing import NDArray
 from elastica.typing import RodType
 
 
+class RewardCalculator:
+    """
+    Base class for reward calculation in the continuum snake environment.
+    Subclasses can override methods to customize reward schemes.
+    """
+    
+    # Default reward weights (negative values for penalties, positive for rewards/bonuses)
+    DEFAULT_REWARD_WEIGHTS = {
+        "forward_progress": 1.0,
+        "lateral_penalty": -1.0,
+        "curvature_penalty": -0.05,
+        "energy_penalty": -2.0e4,
+        "smoothness_penalty": -5.0e3,
+        "alignment_bonus": 0.5,
+        "streak_bonus": 100.0,
+        "projected_speed": 2.0,
+    }
+    
+    def __init__(self):
+        """Initialize the reward calculator with default reward weights."""
+        self.reward_weights = self.DEFAULT_REWARD_WEIGHTS.copy()
+    
+    def calculate_reward(
+        self,
+        forward_progress: float,
+        lateral: float,
+        curvature_magnitude: float,
+        torque_coeffs: NDArray[np.float64],
+        prev_torque_coeffs: Optional[NDArray[np.float64]],
+        speed: float,
+        alignment: float,
+        alignment_streak: int,
+        required_alignment_steps: int,
+        alignment_speed_tol: float,
+        velocity_projection: float,
+    ) -> tuple[float, dict]:
+        """
+        Calculate the total reward and individual reward terms.
+        
+        Args:
+            forward_progress: Progress in the target direction
+            lateral: Lateral movement magnitude
+            curvature_magnitude: Mean curvature magnitude
+            torque_coeffs: Current torque coefficients
+            prev_torque_coeffs: Previous torque coefficients (for smoothness)
+            speed: Current speed magnitude
+            alignment: Alignment with target direction (dot product)
+            alignment_streak: Current alignment streak count
+            required_alignment_steps: Required steps for alignment bonus
+            alignment_speed_tol: Minimum speed for alignment calculations
+            velocity_projection: Projection of velocity onto target direction
+            
+        Returns:
+            Tuple of (total_reward, reward_terms_dict)
+        """
+        reward_terms = {}
+        
+        # Forward progress reward
+        reward_terms["forward_progress"] = self._calculate_forward_progress(forward_progress)
+        
+        # Lateral penalty
+        reward_terms["lateral_penalty"] = self._calculate_lateral_penalty(lateral)
+        
+        # Curvature penalty
+        reward_terms["curvature_penalty"] = self._calculate_curvature_penalty(curvature_magnitude)
+        
+        # Energy penalty (only included if weight is non-zero)
+        energy_penalty = self._calculate_energy_penalty(torque_coeffs)
+        if energy_penalty != 0.0:
+            reward_terms["energy_penalty"] = energy_penalty
+        
+        # Smoothness penalty
+        reward_terms["smoothness_penalty"] = self._calculate_smoothness_penalty(
+            torque_coeffs, prev_torque_coeffs
+        )
+        
+        # Alignment bonus
+        reward_terms["alignment_bonus"] = self._calculate_alignment_bonus(
+            speed, alignment, alignment_streak, required_alignment_steps, alignment_speed_tol
+        )
+        
+        # Projected speed reward
+        reward_terms["projected_speed"] = self._calculate_projected_speed(velocity_projection)
+        
+        total_reward = sum(reward_terms.values())
+        return float(total_reward), reward_terms
+    
+    def _calculate_forward_progress(self, forward_progress: float) -> float:
+        """Calculate forward progress reward component."""
+        return self.reward_weights["forward_progress"] * forward_progress
+    
+    def _calculate_lateral_penalty(self, lateral: float) -> float:
+        """Calculate lateral movement penalty."""
+        return self.reward_weights["lateral_penalty"] * float(lateral)
+    
+    def _calculate_curvature_penalty(self, curvature_magnitude: float) -> float:
+        """Calculate curvature penalty."""
+        return self.reward_weights["curvature_penalty"] * curvature_magnitude
+    
+    def _calculate_energy_penalty(self, torque_coeffs: NDArray[np.float64]) -> float:
+        """Calculate energy penalty based on torque magnitude."""
+        weight = self.reward_weights["energy_penalty"]
+        if weight == 0.0:
+            return 0.0
+        return weight * float(np.linalg.norm(torque_coeffs) ** 2)
+    
+    def _calculate_smoothness_penalty(
+        self,
+        torque_coeffs: NDArray[np.float64],
+        prev_torque_coeffs: Optional[NDArray[np.float64]],
+    ) -> float:
+        """Calculate smoothness penalty based on torque changes."""
+        if prev_torque_coeffs is None:
+            return 0.0
+        delta_torque = torque_coeffs - prev_torque_coeffs
+        return self.reward_weights["smoothness_penalty"] * float(
+            np.linalg.norm(delta_torque) ** 2
+        )
+    
+    def _calculate_alignment_bonus(
+        self,
+        speed: float,
+        alignment: float,
+        alignment_streak: int,
+        required_alignment_steps: int,
+        alignment_speed_tol: float,
+    ) -> float:
+        """Calculate alignment bonus."""
+        if speed <= alignment_speed_tol or alignment <= 0.0:
+            return 0.0
+        
+        bonus = self.reward_weights["alignment_bonus"] * alignment
+        
+        if alignment_streak >= required_alignment_steps:
+            bonus += self.reward_weights["streak_bonus"]
+        
+        return bonus
+    
+    def _calculate_projected_speed(self, velocity_projection: float) -> float:
+        """Calculate projected speed reward."""
+        return self.reward_weights["projected_speed"] * float(velocity_projection)
+
+
 class BaseContinuumSnakeEnv(gym.Env):
     """
     Shared implementation for the PyElastica Continuum Snake Gymnasium environment.
@@ -23,7 +166,7 @@ class BaseContinuumSnakeEnv(gym.Env):
     def __init__(self, obs_keys: Optional[list] = None):
         super().__init__()
 
-        self._n_elem = 50
+        self._n_elem = 10
         self._torque_min = 1e-3
         self._torque_max = 8e-3
         self._torque_span = self._torque_max - self._torque_min
@@ -71,21 +214,7 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.timestepper = ea.PositionVerlet()
 
         self.current_time = 0.0
-        self.state_dict = {
-            "time": [],
-            "avg_position": [],
-            "avg_velocity": [],
-            "curvature": [],
-            "tangents": [],
-            "position": [],
-            "velocity": [],
-            "director": [],
-            "torque_coeffs": [],
-            "wave_number": [],
-            "forward": [],
-            "lateral": [],
-            "reward": [],
-        }
+        self.state_dict = self._create_state_dict()
 
         self._prev_com = None
         self._dir = np.array([0.0, 0.0, 1.0], dtype=np.float64)
@@ -102,19 +231,41 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.velocity_projection = 0.0
         self._last_velocity_vec = np.zeros(3, dtype=np.float64)
 
-        self.reward_weights = {
-            "forward_progress": 1.0,
-            "lateral_penalty": 1, #0.2,
-            "curvature_penalty": 0.05,
-            "energy_penalty": 2.0e4,
-            "smoothness_penalty": 5.0e3,
-            "alignment_bonus": 0.5,
-            "streak_bonus": 100, #1.0
-            "projected_speed": 2.0,
-        }
+        # Initialize reward calculator with default weights
+        self.reward_calculator = RewardCalculator()
         self._prev_torque_coeffs = None
 
         self.callback_data = defaultdict(list)
+
+    def _create_state_dict(self) -> dict:
+        """Create a new state dictionary with empty lists for all keys."""
+        return {
+            "time": [],
+            "avg_position": [],
+            "avg_velocity": [],
+            "curvature": [],
+            "tangents": [],
+            "position": [],
+            "velocity": [],
+            "director": [],
+            "torque_coeffs": [],
+            "wave_number": [],
+            "forward": [],
+            "lateral": [],
+            "reward": [],
+        }
+
+    @property
+    def reward_weights(self) -> dict:
+        """Get the current reward weights."""
+        return self.reward_calculator.reward_weights.copy()
+    
+    @reward_weights.setter
+    def reward_weights(self, value: dict):
+        """Set reward weights and update the reward calculator."""
+        self.reward_calculator.reward_weights = self.reward_calculator.DEFAULT_REWARD_WEIGHTS.copy()
+        if value is not None:
+            self.reward_calculator.reward_weights.update(value)
 
     def _action_space_bounds(self) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
         raise NotImplementedError
@@ -331,22 +482,9 @@ class BaseContinuumSnakeEnv(gym.Env):
         super().reset(seed=seed)
 
         self.current_time = 0.0
-        self.state_dict = {
-            "time": [],
-            "avg_position": [],
-            "avg_velocity": [],
-            "curvature": [],
-            "tangents": [],
-            "position": [],
-            "velocity": [],
-            "director": [],
-            "torque_coeffs": [],
-            "wave_number": [],
-            "forward": [],
-            "lateral": [],
-            "reward": [],
-        }
+        self.state_dict = self._create_state_dict()
 
+        # Reset state variables
         self._prev_com = None
         self._dir = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         self.forward = 0.0
@@ -356,7 +494,6 @@ class BaseContinuumSnakeEnv(gym.Env):
         self._alignment_streak = 0
         self._last_velocity_vec = np.zeros(3, dtype=np.float64)
         self._prev_torque_coeffs = None
-
         self.callback_data = defaultdict(list)
 
         self.shearable_rod = ea.CosseratRod.straight_rod(
@@ -468,42 +605,27 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         torque_coeffs = b_coeff[:-1].astype(np.float64).copy()
         forward_progress = float(np.dot(current_com - prev_com_before, self.target_direction))
-        forward_term = self.reward_weights["forward_progress"] * forward_progress
-        lateral_penalty = -self.reward_weights["lateral_penalty"] * float(self.lateral)
         curvature_array = self.shearable_rod.kappa
         curvature_magnitude = (
             float(np.mean(np.linalg.norm(curvature_array, axis=0))) if curvature_array.size > 0 else 0.0
         )
-        curvature_penalty = -self.reward_weights["curvature_penalty"] * curvature_magnitude
-        energy_penalty = -self.reward_weights["energy_penalty"] * float(np.linalg.norm(torque_coeffs) ** 2)
 
-        smoothness_penalty = 0.0
-        if self._prev_torque_coeffs is not None:
-            delta_torque = torque_coeffs - self._prev_torque_coeffs
-            smoothness_penalty = -self.reward_weights["smoothness_penalty"] * float(
-                np.linalg.norm(delta_torque) ** 2
-            )
+        # Calculate reward using the reward calculator
+        reward, reward_terms = self.reward_calculator.calculate_reward(
+            forward_progress=forward_progress,
+            lateral=self.lateral,
+            curvature_magnitude=curvature_magnitude,
+            torque_coeffs=torque_coeffs,
+            prev_torque_coeffs=self._prev_torque_coeffs,
+            speed=speed,
+            alignment=alignment,
+            alignment_streak=self._alignment_streak,
+            required_alignment_steps=self.required_alignment_steps,
+            alignment_speed_tol=self.alignment_speed_tol,
+            velocity_projection=self.velocity_projection,
+        )
 
-        alignment_bonus = 0.0
-        if speed > self.alignment_speed_tol and alignment > 0.0:
-            alignment_bonus += self.reward_weights["alignment_bonus"] * alignment
-            if self._alignment_streak >= self.required_alignment_steps:
-                alignment_bonus += self.reward_weights["streak_bonus"]
-
-        projected_speed_reward = self.reward_weights["projected_speed"] * float(self.velocity_projection)
-
-        reward_terms = {
-            "forward_progress": float(forward_term),
-            "lateral_penalty": float(lateral_penalty),
-            "curvature_penalty": float(curvature_penalty),
-            # "energy_penalty": float(energy_penalty),
-            "smoothness_penalty": float(smoothness_penalty),
-            "alignment_bonus": float(alignment_bonus),
-            "projected_speed": float(projected_speed_reward),
-        }
-
-        self.reward = float(sum(reward_terms.values()))
-        reward = float(self.reward)
+        self.reward = reward
         self._prev_torque_coeffs = torque_coeffs.copy()
 
         self.state_dict["torque_coeffs"].append(torque_coeffs.copy())
@@ -595,4 +717,62 @@ class VariableWavelengthContinuumSnakeEnv(BaseContinuumSnakeEnv):
         min_w, max_w = self.wavelength_bounds
         wavelength = float(np.clip(action[-1], min_w, max_w))
         return np.append(torques, wavelength)
+
+
+class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
+    """
+    Variant of FixedWavelengthContinuumSnakeEnv that filters out y-components
+    (vertical axis) from velocity, avg_velocity, curvature, and tangents observations.
+    Only x and z components are included in the observation space.
+    """
+    
+    def _calculate_obs_size(self) -> int:
+        """Calculate observation size with 2D (x,z) instead of 3D for filtered keys."""
+        n_elem = self._n_elem
+        n_nodes = n_elem + 1
+        # Keys that should be 2D (x,z only): avg_velocity, curvature, velocity, tangents
+        keys_2d = {"avg_velocity", "curvature", "velocity", "tangents"}
+        
+        key_sizes = {
+            "time": 1,
+            "avg_position": 3,  # Keep full 3D for avg_position
+            "avg_velocity": 2 if "avg_velocity" in keys_2d else 3,
+            "curvature": (n_elem - 1) * 2 if "curvature" in keys_2d else (n_elem - 1) * 3,
+            "tangents": n_elem * 2 if "tangents" in keys_2d else n_elem * 3,
+            "position": n_nodes * 3,  # Keep full 3D for position
+            "velocity": n_nodes * 2 if "velocity" in keys_2d else n_nodes * 3,
+            "director": n_elem * 9,
+        }
+        return sum(key_sizes[key] for key in self.obs_keys)
+    
+    def _get_obs_value_from_rod(self, key: str):
+        """
+        Get observation value from rod, filtering out y-component (index 1)
+        for avg_velocity, curvature, velocity, and tangents.
+        """
+        if key == "position":
+            return self.shearable_rod.position_collection.ravel()
+        if key == "velocity":
+            # Shape: (3, n_nodes) -> select rows 0,2 (x,z) -> flatten
+            vel = self.shearable_rod.velocity_collection
+            return vel[[0, 2], :].ravel()
+        if key == "director":
+            return self.shearable_rod.director_collection.ravel()
+        if key == "curvature":
+            # Shape: (3, n_elem-1) -> select rows 0,2 (x,z) -> flatten
+            kappa = self.shearable_rod.kappa
+            return kappa[[0, 2], :].ravel()
+        if key == "tangents":
+            # Shape: (3, n_elem) -> select rows 0,2 (x,z) -> flatten
+            tangents = self.shearable_rod.tangents
+            return tangents[[0, 2], :].ravel()
+        if key == "avg_position":
+            return self.shearable_rod.compute_position_center_of_mass()
+        if key == "avg_velocity":
+            # Shape: (3,) -> select indices 0,2 (x,z)
+            avg_vel = self.shearable_rod.compute_velocity_center_of_mass()
+            return avg_vel[[0, 2]]
+        if key == "time":
+            return np.array([self.current_time])
+        raise ValueError(f"Unknown observation key: {key}")
 
