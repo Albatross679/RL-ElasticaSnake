@@ -1,11 +1,14 @@
 # Ignore everything
 # *
+__pycache__/
 .venv/
 .DS_Store
 logs/
 Training/
 example_policy_gradient.py
 policy_gradient_utils.py
+test.py
+
 
 # But don't ignore this .gitignore file itself
 !.gitignore

@@ -21,16 +21,22 @@ class RewardCallback(BaseCallback):
         verbose: int = 0,
         print_freq: int = 5,
         step_info_keys: Optional[list[str]] = None,
+        print_exclude_keys: Optional[list[str]] = None,
         save_dir: Optional[str] = None,
         save_freq: int = 100,  # Save every N episodes
         save_steps: bool = True,  # Whether to save step-level data
+        total_timesteps: Optional[int] = None,
     ):
         super(RewardCallback, self).__init__(verbose)
         self.print_freq = print_freq  # Controls both step and episode printing frequency
         self.step_info_keys = step_info_keys or []
+        self.print_exclude_keys = set(print_exclude_keys or [])  # Keys to exclude from printing
         self.save_dir = save_dir
         self.save_freq = save_freq
         self.save_steps = save_steps
+        self.total_timesteps = total_timesteps
+        self.start_timesteps = None  # Will be set in _init_callback
+        self._first_seen_timestep = None  # Track first timestep we see for lazy init
         
         self.episode_rewards = []
         self.episode_lengths = []
@@ -47,8 +53,25 @@ class RewardCallback(BaseCallback):
             os.makedirs(self.save_dir, exist_ok=True)
             # Single unified training data file (overwritten at checkpoints)
             self.training_data_file = os.path.join(self.save_dir, "training_data.json")
+    
+    def _init_callback(self) -> None:
+        """Initialize callback - capture starting timestep for progress calculation"""
+        self.start_timesteps = self.num_timesteps
 
     def _on_step(self) -> bool:
+        # Track the first timestep we see for lazy initialization
+        if self._first_seen_timestep is None:
+            self._first_seen_timestep = self.num_timesteps
+        
+        # Ensure start_timesteps is set correctly
+        # If it's None, set it to the first timestep we saw (handles case where _init_callback wasn't called)
+        # If it's 0 but we've seen a higher timestep, use the first non-zero timestep we saw
+        if self.start_timesteps is None:
+            self.start_timesteps = self._first_seen_timestep
+        elif self.start_timesteps == 0 and self._first_seen_timestep > 0:
+            # If _init_callback captured 0 but we're resuming from a higher timestep, use the first timestep we saw
+            self.start_timesteps = self._first_seen_timestep
+        
         rewards = self.locals.get('rewards', [0])
         infos = self.locals.get('infos', [{}])
         info_dict = infos[0] if infos and isinstance(infos[0], dict) else {}
@@ -70,11 +93,24 @@ class RewardCallback(BaseCallback):
             self.latest_step_entry = step_entry
 
             if self.save_steps and (self.num_timesteps - self.last_snapshot_timestep) >= self.save_freq:
+                # Print progress at snapshot steps
+                if self.total_timesteps is not None:
+                    # Calculate target total: starting timesteps + total timesteps for this session
+                    # Ensure we have a valid start_timesteps (should be set by now due to lazy init above)
+                    target_total = self.start_timesteps + self.total_timesteps
+                    # Progress percentage is based on this session's progress (starts at 0%)
+                    session_progress = self.num_timesteps - self.start_timesteps
+                    progress_pct = min((session_progress / self.total_timesteps) * 100, 100.0)
+                    print(f"\n[Snapshot] Progress: {self.num_timesteps:,} / {target_total:,} steps ({progress_pct:.2f}%)")
+                else:
+                    print(f"\n[Snapshot] Step: {self.num_timesteps:,}")
                 self.record_step_snapshot()
                 self.last_snapshot_timestep = self.num_timesteps
 
             if self.num_timesteps % self.print_freq == 0:
-                info_bits = [f"{k}={info_dict[k]}" for k in self.step_info_keys if k in info_dict]
+                # Filter out excluded keys from printing
+                keys_to_print = [k for k in self.step_info_keys if k in info_dict and k not in self.print_exclude_keys]
+                info_bits = [f"{k}={info_dict[k]}" for k in keys_to_print]
                 info_str = f" | {'; '.join(info_bits)}" if info_bits else ""
                 sim_time_str = f" | sim_time={sim_time:.6f}" if sim_time is not None else ""
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Step {self.num_timesteps}] reward={step_reward:.6f}{sim_time_str}{info_str}")
@@ -158,6 +194,7 @@ class OverwriteCheckpointCallback(BaseCallback):
         filename: str = "checkpoint",
         verbose: int = 0,
         checkpoint_hooks: Optional[Iterable[Callable[[int], None]]] = None,
+        total_timesteps: Optional[int] = None,
     ):
         super().__init__(verbose)
         if save_path is None:
@@ -168,14 +205,40 @@ class OverwriteCheckpointCallback(BaseCallback):
         self._last_checkpoint_step = 0
         self._checkpoint_file = os.path.join(self.save_path, self.filename)
         self.checkpoint_hooks = list(checkpoint_hooks) if checkpoint_hooks else []
+        self.total_timesteps = total_timesteps
+        self.start_timesteps = None  # Will be set in _init_callback
+        self._first_seen_timestep = None  # Track first timestep we see for lazy init
 
     def _init_callback(self) -> None:
         os.makedirs(self.save_path, exist_ok=True)
+        self.start_timesteps = self.num_timesteps
 
     def _save_checkpoint(self) -> None:
         self.model.save(self._checkpoint_file)
+        
+        # Ensure start_timesteps is set (lazy initialization)
+        if self._first_seen_timestep is None:
+            self._first_seen_timestep = self.num_timesteps
+        
+        if self.start_timesteps is None:
+            self.start_timesteps = self._first_seen_timestep
+        elif self.start_timesteps == 0 and self._first_seen_timestep > 0:
+            self.start_timesteps = self._first_seen_timestep
+        
+        # Print progress information
+        if self.total_timesteps is not None:
+            # Calculate target total: starting timesteps + total timesteps for this session
+            target_total = self.start_timesteps + self.total_timesteps
+            # Progress percentage is based on this session's progress (starts at 0%)
+            session_progress = self.num_timesteps - self.start_timesteps
+            progress_pct = min((session_progress / self.total_timesteps) * 100, 100.0)
+            print(f"\n[Snapshot] Progress: {self.num_timesteps:,} / {target_total:,} steps ({progress_pct:.2f}%)")
+        else:
+            print(f"\n[Snapshot] Step: {self.num_timesteps:,}")
+        
         if self.verbose > 0:
             print(f"Checkpoint saved to {self._checkpoint_file}")
+        
         for hook in self.checkpoint_hooks:
             try:
                 hook(self.num_timesteps)
@@ -184,6 +247,10 @@ class OverwriteCheckpointCallback(BaseCallback):
                     print(f"Checkpoint hook error: {hook_exc}")
 
     def _on_step(self) -> bool:
+        # Track the first timestep we see for lazy initialization
+        if self._first_seen_timestep is None:
+            self._first_seen_timestep = self.num_timesteps
+        
         if self.num_timesteps - self._last_checkpoint_step >= self.checkpoint_freq:
             self._save_checkpoint()
             self._last_checkpoint_step = self.num_timesteps

@@ -17,7 +17,8 @@ ENV_CONFIG = {
 REWARD_WEIGHTS = {
     "forward_progress": 1.0,
     "lateral_penalty": -1.0,  # Negative for penalty
-    "curvature_penalty": -0.05,  # Negative for penalty
+    "curvature_range_penalty": -0.1,  # Negative for penalty
+    "curvature_oscillation_reward": 1.0,  # Positive for reward
     "energy_penalty": -2.0e4,  # Negative for penalty (set to 0.0 to disable)
     "smoothness_penalty": -5.0e3,  # Negative for penalty
     "alignment_bonus": 0.5,
@@ -27,7 +28,7 @@ REWARD_WEIGHTS = {
 
 # Training configuration
 TRAIN_CONFIG = {
-    "total_timesteps": 5000,  # Change to 50_000 or more for full training
+    "total_timesteps": 25000,  # Change to 50_000 or more for full training
     "n_steps": 2048,
     "gae_lambda": 0.95,
     "gamma": 0.99,
@@ -36,13 +37,16 @@ TRAIN_CONFIG = {
     "print_freq": 100,  # Controls both step-level and episode-level printing frequency
     "step_info_keys": ["forward_speed",
                        "lateral_speed", 
-                       "velocity_projection", 
+                       "velocity_projection",
+                       "curvatures",  # Saved but not printed (see print_exclude_keys)
+                       "reward_terms",  # Saved but not printed (see print_exclude_keys)
                     #    "forward_progress",
                     #    "speed", 
                     #    "alignment",
                     #    "alignment_streak",
                     #    "alignment_goal_met"
                        ],
+    "print_exclude_keys": ["curvatures", "reward_terms"],  # Keys to save but exclude from printing
     "save_freq": 100,  # Save every N timesteps for training snapshots
     "save_steps": True,  # Whether to save step-level data
     "checkpoint_freq": 10_000,  # Timesteps between checkpoint saves

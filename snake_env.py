@@ -23,7 +23,8 @@ class RewardCalculator:
     DEFAULT_REWARD_WEIGHTS = {
         "forward_progress": 1.0,
         "lateral_penalty": -1.0,
-        "curvature_penalty": -0.05,
+        "curvature_range_penalty": -0.1,
+        "curvature_oscillation_reward": 1.0,
         "energy_penalty": -2.0e4,
         "smoothness_penalty": -5.0e3,
         "alignment_bonus": 0.5,
@@ -39,7 +40,9 @@ class RewardCalculator:
         self,
         forward_progress: float,
         lateral: float,
-        curvature_magnitude: float,
+        curvature_array: NDArray[np.float64],
+        curvature_history: list[NDArray[np.float64]],
+        prev_curvature_array: Optional[NDArray[np.float64]],
         torque_coeffs: NDArray[np.float64],
         prev_torque_coeffs: Optional[NDArray[np.float64]],
         speed: float,
@@ -55,7 +58,9 @@ class RewardCalculator:
         Args:
             forward_progress: Progress in the target direction
             lateral: Lateral movement magnitude
-            curvature_magnitude: Mean curvature magnitude
+            curvature_array: Current curvature array (3, n_elem-1)
+            curvature_history: List of curvature arrays from last 50 steps
+            prev_curvature_array: Previous step curvature array (for oscillation)
             torque_coeffs: Current torque coefficients
             prev_torque_coeffs: Previous torque coefficients (for smoothness)
             speed: Current speed magnitude
@@ -76,8 +81,15 @@ class RewardCalculator:
         # Lateral penalty
         reward_terms["lateral_penalty"] = self._calculate_lateral_penalty(lateral)
         
-        # Curvature penalty
-        reward_terms["curvature_penalty"] = self._calculate_curvature_penalty(curvature_magnitude)
+        # Curvature range penalty (based on 50-step average)
+        reward_terms["curvature_range_penalty"] = self._calculate_curvature_range_penalty(
+            curvature_history
+        )
+        
+        # Curvature oscillation reward
+        reward_terms["curvature_oscillation_reward"] = self._calculate_curvature_oscillation_reward(
+            curvature_array, prev_curvature_array
+        )
         
         # Energy penalty (only included if weight is non-zero)
         energy_penalty = self._calculate_energy_penalty(torque_coeffs)
@@ -108,9 +120,62 @@ class RewardCalculator:
         """Calculate lateral movement penalty."""
         return self.reward_weights["lateral_penalty"] * float(lateral)
     
-    def _calculate_curvature_penalty(self, curvature_magnitude: float) -> float:
-        """Calculate curvature penalty."""
-        return self.reward_weights["curvature_penalty"] * curvature_magnitude
+    def _calculate_curvature_range_penalty(
+        self, curvature_history: list[NDArray[np.float64]]
+    ) -> float:
+        """
+        Calculate curvature range penalty based on 50-step average.
+        If mean curvature of each element stays within [9,15], do nothing.
+        If mean goes beyond [9,15], penalize proportional to the difference.
+        """
+        if len(curvature_history) == 0:
+            return 0.0
+        
+        # Use last 50 steps (or all available if less than 50)
+        history_window = curvature_history[-50:] if len(curvature_history) >= 50 else curvature_history
+        
+        # Stack curvature arrays: shape (n_steps, 3, n_elem-1)
+        curvature_stack = np.stack(history_window, axis=0)
+        
+        # Calculate magnitude for each element at each step: shape (n_steps, n_elem-1)
+        curvature_magnitudes = np.linalg.norm(curvature_stack, axis=1)
+        
+        # Calculate mean curvature for each element over the window: shape (n_elem-1,)
+        mean_curvatures = np.mean(curvature_magnitudes, axis=0)
+        
+        # Penalize if mean is outside [9, 15]
+        penalty = 0.0
+        for mean_curv in mean_curvatures:
+            if mean_curv < 9.0:
+                # Below lower bound: penalize by distance from 9
+                penalty += (9.0 - mean_curv)
+            elif mean_curv > 15.0:
+                # Above upper bound: penalize by distance from 15
+                penalty += (mean_curv - 15.0)
+        
+        return self.reward_weights["curvature_range_penalty"] * penalty
+    
+    def _calculate_curvature_oscillation_reward(
+        self,
+        curvature_array: NDArray[np.float64],
+        prev_curvature_array: Optional[NDArray[np.float64]],
+    ) -> float:
+        """
+        Calculate curvature oscillation reward.
+        Sum of absolute differences of curvatures of each element from previous step.
+        """
+        if prev_curvature_array is None:
+            return 0.0
+        
+        # Calculate magnitude for each element: shape (n_elem-1,)
+        current_magnitudes = np.linalg.norm(curvature_array, axis=0)
+        prev_magnitudes = np.linalg.norm(prev_curvature_array, axis=0)
+        
+        # Calculate absolute differences and sum
+        abs_differences = np.abs(current_magnitudes - prev_magnitudes)
+        oscillation_sum = float(np.sum(abs_differences))
+        
+        return self.reward_weights["curvature_oscillation_reward"] * oscillation_sum
     
     def _calculate_energy_penalty(self, torque_coeffs: NDArray[np.float64]) -> float:
         """Calculate energy penalty based on torque magnitude."""
@@ -234,6 +299,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         # Initialize reward calculator with default weights
         self.reward_calculator = RewardCalculator()
         self._prev_torque_coeffs = None
+        self._curvature_history = []  # Store last 50 steps of curvature
+        self._prev_curvature_array = None  # Previous step curvature for oscillation
 
         self.callback_data = defaultdict(list)
 
@@ -494,6 +561,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         self._alignment_streak = 0
         self._last_velocity_vec = np.zeros(3, dtype=np.float64)
         self._prev_torque_coeffs = None
+        self._curvature_history = []
+        self._prev_curvature_array = None
         self.callback_data = defaultdict(list)
 
         self.shearable_rod = ea.CosseratRod.straight_rod(
@@ -605,16 +674,20 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         torque_coeffs = b_coeff[:-1].astype(np.float64).copy()
         forward_progress = float(np.dot(current_com - prev_com_before, self.target_direction))
-        curvature_array = self.shearable_rod.kappa
-        curvature_magnitude = (
-            float(np.mean(np.linalg.norm(curvature_array, axis=0))) if curvature_array.size > 0 else 0.0
-        )
+        curvature_array = self.shearable_rod.kappa.copy()
+        
+        # Update curvature history (keep last 50 steps)
+        self._curvature_history.append(curvature_array)
+        if len(self._curvature_history) > 50:
+            self._curvature_history.pop(0)
 
         # Calculate reward using the reward calculator
         reward, reward_terms = self.reward_calculator.calculate_reward(
             forward_progress=forward_progress,
             lateral=self.lateral,
-            curvature_magnitude=curvature_magnitude,
+            curvature_array=curvature_array,
+            curvature_history=self._curvature_history,
+            prev_curvature_array=self._prev_curvature_array,
             torque_coeffs=torque_coeffs,
             prev_torque_coeffs=self._prev_torque_coeffs,
             speed=speed,
@@ -627,6 +700,7 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         self.reward = reward
         self._prev_torque_coeffs = torque_coeffs.copy()
+        self._prev_curvature_array = curvature_array.copy()
 
         self.state_dict["torque_coeffs"].append(torque_coeffs.copy())
         self.state_dict["wave_number"].append(2.0 * np.pi / b_coeff[-1])
@@ -656,6 +730,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         info["position"] = current_com.astype(float)
         info["heading_dir"] = self._dir.astype(float)
         info["current_time"] = float(self.current_time)
+        # Add curvatures of each element (shape: 3, n_elem-1) as a list for JSON serialization
+        info["curvatures"] = curvature_array.astype(float).tolist()
 
         return observation, reward, terminated, truncated, info
 
@@ -744,6 +820,55 @@ class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
             "director": n_elem * 9,
         }
         return sum(key_sizes[key] for key in self.obs_keys)
+    
+    def _filter_2d_value(self, key: str, value: NDArray[np.float64]) -> NDArray[np.float64]:
+        """
+        Filter out y-component (index 1) from observation values for keys that need 2D filtering.
+        """
+        keys_2d = {"avg_velocity", "curvature", "velocity", "tangents"}
+        if key not in keys_2d:
+            return value
+        
+        if key == "avg_velocity":
+            # Shape: (3,) -> select indices 0,2 (x,z)
+            return value[[0, 2]]
+        elif key == "curvature":
+            # Shape: (3, n_elem-1) -> select rows 0,2 (x,z) -> flatten
+            return value[[0, 2], :].ravel()
+        elif key == "velocity":
+            # Shape: (3, n_nodes) -> select rows 0,2 (x,z) -> flatten
+            return value[[0, 2], :].ravel()
+        elif key == "tangents":
+            # Shape: (3, n_elem) -> select rows 0,2 (x,z) -> flatten
+            return value[[0, 2], :].ravel()
+        else:
+            return value
+    
+    def _get_obs(self):
+        """
+        Override to filter state_dict values when using them for 2D observations.
+        """
+        obs_parts = []
+        use_state_dict = (
+            len(self.obs_keys) > 0
+            and self.obs_keys[0] in self.state_dict
+            and len(self.state_dict[self.obs_keys[0]]) > 0
+        )
+
+        for key in self.obs_keys:
+            if use_state_dict and key in self.state_dict and len(self.state_dict[key]) > 0:
+                latest_value = self.state_dict[key][-1]
+                if isinstance(latest_value, np.ndarray):
+                    # Filter 2D keys to remove y-component
+                    filtered_value = self._filter_2d_value(key, latest_value)
+                    # filtered_value is already flattened for 2D keys, just ensure it's 1D
+                    obs_parts.append(filtered_value.ravel())
+                else:
+                    obs_parts.append(np.array([latest_value]))
+            else:
+                obs_parts.append(self._get_obs_value_from_rod(key))
+
+        return np.concatenate(obs_parts).astype(np.float32)
     
     def _get_obs_value_from_rod(self, key: str):
         """
