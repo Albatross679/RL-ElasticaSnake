@@ -5,7 +5,6 @@ Run this script to train the PPO agent on the snake environment.
 
 import os
 import sys
-import signal
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
@@ -32,45 +31,12 @@ def create_environment():
     return env
 
 
-# Global variables for signal handling
-model = None
-env = None
-start_time = None
-
-def signal_handler(signum, frame):
-    """Handle termination signals (SIGTERM from SLURM, SIGINT from Ctrl+C)"""
-    print(f"\n\nReceived signal {signum}. Saving model and exiting gracefully...", flush=True)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    try:
-        if model is not None:
-            model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
-            model.save(model_path)
-            print(f"Model saved to {model_path}", flush=True)
-        if env is not None:
-            env.close()
-        if start_time is not None:
-            elapsed = time.time() - start_time
-            print(f"Total training time: {elapsed:.1f} seconds ({elapsed/60:.2f} minutes)", flush=True)
-    except Exception as e:
-        print(f"Error during cleanup: {e}", flush=True, file=sys.stderr)
-    finally:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        sys.exit(0)
-
-
 def main():
-    global model, env, start_time
-    start_time = time.time()
     """Main training function"""
+    start_time = time.time()
     print("=" * 70)
     print("Starting RL Training for Continuum Snake")
     print("=" * 70)
-    
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGTERM, signal_handler)  # SLURM sends SIGTERM on scancel
-    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C sends SIGINT
     
     # Create directories
     os.makedirs(config.PATHS["log_dir"], exist_ok=True)
