@@ -5,9 +5,11 @@ __pycache__/
 .DS_Store
 logs/
 Training/
-example_policy_gradient.py
-policy_gradient_utils.py
-test.py
+developing/
+policy_gradient_visualizations/
+videos/
+documents/
+
 
 
 # But don't ignore this .gitignore file itself
