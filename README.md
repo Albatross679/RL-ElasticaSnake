@@ -11,7 +11,8 @@ RL-ElasticaSnake/
 ├── config.py             # Configuration parameters
 ├── train.py              # Main training script
 ├── test.py               # Model evaluation script
-├── visualization.py      # Visualization utilities
+├── Utilities/
+│   └── visualization.py  # Visualization utilities
 ├── slurm_job.sh          # Example Slurm job script
 ├── requirements.txt      # Python dependencies
 └── README.md            # This file

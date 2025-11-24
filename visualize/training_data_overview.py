@@ -7,11 +7,17 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
 ROOT = Path(__file__).resolve().parents[1]
-# DATA_PATH = ROOT / "Training" / "Logs" / "training_data.json"
-DATA_PATH = ROOT / "Training" / "Logs" / "test_training_data.json"
-# OUTPUT_PATH = ROOT / "Training" / "Results" / "training_data_overview.html"
-OUTPUT_PATH = ROOT / "Training" / "Results" / "fixed_action_testing_data_overview.html"
+DATA_PATH = ROOT / "Training" / "Logs" / "training_data.json"
+# DATA_PATH = ROOT / "Training" / "Logs" / "test_training_data.json"
+OUTPUT_PATH = ROOT / "Training" / "Results" / "training_data_overview.html"
+# OUTPUT_PATH = ROOT / "Training" / "Results" / "fixed_action_testing_data_overview.html"
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 REWARD_TERMS = [
@@ -106,6 +112,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="chart-full" id="step-speed"></div>
   <div class="chart-full" id="step-simtime"></div>
 
+  <h2>Action signals</h2>
+  <div class="term-grid" id="action-grid"></div>
+
   <h2>Curvature norms</h2>
   <div class="chart-grid">
     <div id="curvature-norm-avg"></div>
@@ -131,6 +140,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const curvatureStdData = {curvature_std_data};
     const rewardTerms = {reward_terms};
     const curvatureSectionsData = {curvature_sections_data};
+    const actionFields = {action_fields};
     const rewardTermLabels = {{
       forward_progress: "Forward progress",
       projected_speed: "Projected speed",
@@ -601,6 +611,55 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       sectionGridEl.appendChild(panel);
       embedChart(`#${{panel.id}}`, createSectionSpec(segment));
     }});
+
+    const createActionSpec = (field) => ({{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      data: {{ values: stepsData }},
+      width: 320,
+      height: 220,
+      encoding: {{
+        x: {{
+          field: "timestep",
+          type: "quantitative",
+          title: "Timestep"
+        }}
+      }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#ffb300", opacity: 0.35 }},
+          encoding: {{
+            y: {{ field: field, type: "quantitative" }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: field, type: "quantitative", format: ".3f", title: "value" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: field, as: "value_smoothed" }}],
+              frame: [-200, 0],
+              sort: [{{ field: "timestep", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#f57c00", strokeWidth: 2 }},
+          encoding: {{
+            y: {{ field: "value_smoothed", type: "quantitative" }}
+          }}
+        }}
+      ],
+      title: field.replace("action_", "Action ")
+    }});
+
+    const actionGridEl = document.getElementById("action-grid");
+    actionFields.forEach((field, idx) => {{
+      const panel = document.createElement("div");
+      panel.className = "term-panel";
+      panel.id = `action-panel-${{idx}}`;
+      actionGridEl.appendChild(panel);
+      embedChart(`#${{panel.id}}`, createActionSpec(field));
+    }});
   </script>
 </body>
 </html>
@@ -612,7 +671,9 @@ def load_data(path: Path) -> dict:
         return json.load(fh)
 
 
-def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict]]:
+def prepare_datasets(
+    data: dict,
+) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict], List[str]]:
     episodes = [
         {
             "episode": idx,
@@ -626,6 +687,7 @@ def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], Li
     steps_data: List[Dict] = []
     curvature_sections: List[Dict] = []
     segments = len(data["steps"][0]["curvatures"][0])
+    action_fields: List[str] = []
     for step in data["steps"]:
         curvature_components = step["curvatures"]
         segment_norms = []
@@ -653,6 +715,12 @@ def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], Li
             "episode": step["episode"],
             "curvature_norm_avg": sum(segment_norms) / segments if segment_norms else 0.0,
         }
+        actions = step.get("action", [])
+        for idx, value in enumerate(actions):
+            field_name = f"action_{idx + 1}"
+            entry[field_name] = value
+            if idx >= len(action_fields):
+                action_fields.append(field_name)
         entry.update(step["reward_terms"])
         steps_data.append(entry)
 
@@ -664,7 +732,7 @@ def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], Li
             mean_records.append({"band": f"band_{band_idx}", "segment": f"seg_{seg_idx}", "value": mean_val})
             std_records.append({"band": f"band_{band_idx}", "segment": f"seg_{seg_idx}", "std": std_val})
 
-    return episodes, steps_data, mean_records, std_records, curvature_sections
+    return episodes, steps_data, mean_records, std_records, curvature_sections, action_fields
 
 
 def compute_curvature_stats(steps: List[dict]) -> Tuple[List[List[float]], List[List[float]]]:
@@ -700,6 +768,7 @@ def render_html(
     curvature_mean: List[Dict],
     curvature_std: List[Dict],
     curvature_sections: List[Dict],
+    action_fields: List[str],
 ) -> str:
     return HTML_TEMPLATE.format(
         saved_at=metadata["saved_at"],
@@ -711,17 +780,53 @@ def render_html(
         curvature_std_data=json.dumps(curvature_std),
         reward_terms=json.dumps(REWARD_TERMS),
         curvature_sections_data=json.dumps(curvature_sections),
+        action_fields=json.dumps(action_fields),
     )
+
+
+def html_to_png(html_path: Path, png_path: Path, wait_time: int = 5000) -> None:
+    """Convert HTML file to PNG using Playwright."""
+    if not PLAYWRIGHT_AVAILABLE:
+        print("Warning: playwright not available. Install with: pip install playwright && playwright install chromium")
+        return
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.goto(f"file://{html_path.resolve()}")
+        # Wait for Vega charts to render (they need time to load and render)
+        page.wait_for_timeout(wait_time)
+        # Take full page screenshot
+        page.screenshot(path=str(png_path), full_page=True)
+        browser.close()
+    print(f"Saved PNG: {png_path}")
 
 
 def main() -> None:
     data = load_data(DATA_PATH)
-    episodes, steps_data, mean_records, std_records, curvature_sections = prepare_datasets(data)
+    (
+        episodes,
+        steps_data,
+        mean_records,
+        std_records,
+        curvature_sections,
+        action_fields,
+    ) = prepare_datasets(data)
     html = render_html(
-        data["metadata"], episodes, steps_data, mean_records, std_records, curvature_sections
+        data["metadata"],
+        episodes,
+        steps_data,
+        mean_records,
+        std_records,
+        curvature_sections,
+        action_fields,
     )
     OUTPUT_PATH.write_text(html)
     print(f"Wrote {OUTPUT_PATH}")
+    
+    # Convert HTML to PNG
+    png_path = OUTPUT_PATH.with_suffix('.png')
+    html_to_png(OUTPUT_PATH, png_path)
 
 
 if __name__ == "__main__":

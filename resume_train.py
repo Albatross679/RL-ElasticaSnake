@@ -27,6 +27,7 @@ def create_environment():
     env.period = config.ENV_CONFIG["period"]
     env.ratio_time = config.ENV_CONFIG["ratio_time"]
     env.rut_ratio = config.ENV_CONFIG["rut_ratio"]
+    env.max_episode_length = config.ENV_CONFIG["max_episode_length"]
     env.reward_weights = config.REWARD_WEIGHTS
     
     return env

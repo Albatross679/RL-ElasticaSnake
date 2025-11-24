@@ -265,6 +265,7 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.time_step = 1e-4
         self.rut_ratio = 1
         self.slip_velocity_tol = 1e-8
+        self.max_episode_length = 300  # Maximum simulation time (seconds) before episode termination
 
         self.start = np.zeros((3,))
         self.direction = np.array([0.0, 0.0, 1.0])
@@ -708,8 +709,7 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.state_dict["lateral"].append(float(self.lateral))
         self.state_dict["reward"].append(float(self.reward))
 
-        max_sim_time = 300
-        terminated_due_to_time = self.current_time >= max_sim_time
+        terminated_due_to_time = self.current_time >= self.max_episode_length
         terminated_due_to_alignment = self._alignment_streak >= self.required_alignment_steps
         terminated = terminated_due_to_time or terminated_due_to_alignment
         truncated = False
@@ -732,6 +732,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         info["current_time"] = float(self.current_time)
         # Add curvatures of each element (shape: 3, n_elem-1) as a list for JSON serialization
         info["curvatures"] = curvature_array.astype(float).tolist()
+        # Record the raw action supplied to the environment for downstream logging
+        info["action"] = action.astype(float).tolist()
 
         return observation, reward, terminated, truncated, info
 

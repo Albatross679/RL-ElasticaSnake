@@ -27,6 +27,7 @@ def create_environment():
     env.period = config.ENV_CONFIG["period"]
     env.ratio_time = config.ENV_CONFIG["ratio_time"]
     env.rut_ratio = config.ENV_CONFIG["rut_ratio"]
+    env.max_episode_length = config.ENV_CONFIG["max_episode_length"]
     env.reward_weights = config.REWARD_WEIGHTS
     
     return env
@@ -62,9 +63,9 @@ def main():
     model = PPO(
         config.MODEL_CONFIG["policy"],
         env,
-        gamma=0.99,      # <--- The Discount Factor
-        gae_lambda=0.95, # <--- The GAE Parameter
-        n_steps=2048,    # <--- The Rollout Buffer Size
+        gamma=config.MODEL_CONFIG["gamma"],      # <--- The Discount Factor
+        gae_lambda=config.MODEL_CONFIG["gae_lambda"], # <--- The GAE Parameter
+        n_steps=config.MODEL_CONFIG["n_steps"],    # <--- The Rollout Buffer Size
         verbose=config.MODEL_CONFIG["verbose"],
         # tensorboard_log=config.PATHS["log_dir"]  # Uncomment for tensorboard logging
     )
