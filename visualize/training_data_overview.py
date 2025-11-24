@@ -10,7 +10,8 @@ from typing import Dict, List, Tuple
 ROOT = Path(__file__).resolve().parents[1]
 # DATA_PATH = ROOT / "Training" / "Logs" / "training_data.json"
 DATA_PATH = ROOT / "Training" / "Logs" / "test_training_data.json"
-OUTPUT_PATH = ROOT / "Training" / "Results" / "training_data_overview.html"
+# OUTPUT_PATH = ROOT / "Training" / "Results" / "training_data_overview.html"
+OUTPUT_PATH = ROOT / "Training" / "Results" / "fixed_action_testing_data_overview.html"
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 REWARD_TERMS = [
@@ -105,6 +106,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="chart-full" id="step-speed"></div>
   <div class="chart-full" id="step-simtime"></div>
 
+  <h2>Curvature norms</h2>
+  <div class="chart-grid">
+    <div id="curvature-norm-avg"></div>
+  </div>
+  <h3>Sections</h3>
+  <div class="term-grid" id="curvature-section-grid"></div>
+
   <h2>Reward term contributions</h2>
   <div class="chart-full" id="reward-terms"></div>
   <h3>Individual terms</h3>
@@ -122,6 +130,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const curvatureMeanData = {curvature_mean_data};
     const curvatureStdData = {curvature_std_data};
     const rewardTerms = {reward_terms};
+    const curvatureSectionsData = {curvature_sections_data};
     const rewardTermLabels = {{
       forward_progress: "Forward progress",
       projected_speed: "Projected speed",
@@ -445,6 +454,89 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Curvature standard deviation"
     }});
 
+    embedChart("#curvature-norm-avg", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 360,
+      height: 220,
+      data: {{ values: stepsData }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#b0bec5", opacity: 0.4 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative" }},
+            y: {{
+              field: "curvature_norm_avg",
+              type: "quantitative",
+              title: "Mean |curvature|"
+            }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: "curvature_norm_avg", type: "quantitative", format: ".3f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [
+                {{ op: "mean", field: "curvature_norm_avg", as: "curvature_norm_avg_smoothed" }}
+              ],
+              frame: [-200, 0],
+              sort: [{{ field: "timestep", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#00897b", strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative" }},
+            y: {{ field: "curvature_norm_avg_smoothed", type: "quantitative" }}
+          }}
+        }}
+      ],
+      title: "Average curvature magnitude (raw + rolling mean)"
+    }});
+
+    const createSectionSpec = (segment) => {{
+      return {{
+        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+        data: {{ values: curvatureSectionsData }},
+        width: 320,
+        height: 200,
+        transform: [
+          {{ filter: {{ field: "segment", equal: segment }} }}
+        ],
+        layer: [
+          {{
+            mark: {{ type: "line", color: "#ce93d8", opacity: 0.4 }},
+            encoding: {{
+              x: {{ field: "timestep", type: "quantitative", title: "Timestep" }},
+              y: {{ field: "value", type: "quantitative", title: "|curvature|" }},
+              tooltip: [
+                {{ field: "timestep", type: "quantitative" }},
+                {{ field: "value", type: "quantitative", format: ".3f" }}
+              ]
+            }}
+          }},
+          {{
+            transform: [
+              {{
+                window: [
+                  {{ op: "mean", field: "value", as: "value_smoothed" }}
+                ],
+                frame: [-200, 0],
+                sort: [{{ field: "timestep", order: "ascending" }}]
+              }}
+            ],
+            mark: {{ type: "line", color: "#7b1fa2", strokeWidth: 2 }},
+            encoding: {{
+              x: {{ field: "timestep", type: "quantitative" }},
+              y: {{ field: "value_smoothed", type: "quantitative" }}
+            }}
+          }}
+        ],
+        title: segment
+      }};
+    }};
+
     const axisLabelExpr = "abs(datum.value) < 1e-3 ? format(datum.value, '.1e') : abs(datum.value) >= 1000 ? format(datum.value, '.2s') : format(datum.value, '.3f')";
 
     const createTermSpec = (term) => ({{
@@ -499,6 +591,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       termGridEl.appendChild(panel);
       embedChart(`#${{panel.id}}`, createTermSpec(term));
     }});
+
+    const sectionNames = Array.from(new Set((curvatureSectionsData || []).map((d) => d.segment)));
+    const sectionGridEl = document.getElementById("curvature-section-grid");
+    sectionNames.forEach((segment, idx) => {{
+      const panel = document.createElement("div");
+      panel.className = "term-panel";
+      panel.id = `curvature-section-${{idx}}`;
+      sectionGridEl.appendChild(panel);
+      embedChart(`#${{panel.id}}`, createSectionSpec(segment));
+    }});
   </script>
 </body>
 </html>
@@ -510,7 +612,7 @@ def load_data(path: Path) -> dict:
         return json.load(fh)
 
 
-def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict]]:
+def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict]]:
     episodes = [
         {
             "episode": idx,
@@ -521,8 +623,26 @@ def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], Li
         for idx, reward in enumerate(data["episodes"]["rewards"])
     ]
 
-    steps_data = []
+    steps_data: List[Dict] = []
+    curvature_sections: List[Dict] = []
+    segments = len(data["steps"][0]["curvatures"][0])
     for step in data["steps"]:
+        curvature_components = step["curvatures"]
+        segment_norms = []
+        for seg_idx in range(segments):
+            x = curvature_components[0][seg_idx]
+            y = curvature_components[1][seg_idx]
+            z = curvature_components[2][seg_idx]
+            segment_norm = math.sqrt(x * x + y * y + z * z)
+            segment_norms.append(segment_norm)
+            curvature_sections.append(
+                {
+                    "timestep": step["timestep"],
+                    "segment": f"Section {seg_idx + 1}",
+                    "value": segment_norm,
+                }
+            )
+
         entry = {
             "timestep": step["timestep"],
             "reward": step["reward"],
@@ -531,6 +651,7 @@ def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], Li
             "lateral_speed": step["lateral_speed"],
             "velocity_projection": step["velocity_projection"],
             "episode": step["episode"],
+            "curvature_norm_avg": sum(segment_norms) / segments if segment_norms else 0.0,
         }
         entry.update(step["reward_terms"])
         steps_data.append(entry)
@@ -543,7 +664,7 @@ def prepare_datasets(data: dict) -> Tuple[List[Dict], List[Dict], List[Dict], Li
             mean_records.append({"band": f"band_{band_idx}", "segment": f"seg_{seg_idx}", "value": mean_val})
             std_records.append({"band": f"band_{band_idx}", "segment": f"seg_{seg_idx}", "std": std_val})
 
-    return episodes, steps_data, mean_records, std_records
+    return episodes, steps_data, mean_records, std_records, curvature_sections
 
 
 def compute_curvature_stats(steps: List[dict]) -> Tuple[List[List[float]], List[List[float]]]:
@@ -572,7 +693,14 @@ def compute_curvature_stats(steps: List[dict]) -> Tuple[List[List[float]], List[
     return means, stds
 
 
-def render_html(metadata: dict, episodes: List[Dict], steps: List[Dict], curvature_mean: List[Dict], curvature_std: List[Dict]) -> str:
+def render_html(
+    metadata: dict,
+    episodes: List[Dict],
+    steps: List[Dict],
+    curvature_mean: List[Dict],
+    curvature_std: List[Dict],
+    curvature_sections: List[Dict],
+) -> str:
     return HTML_TEMPLATE.format(
         saved_at=metadata["saved_at"],
         total_timesteps=metadata["total_timesteps"],
@@ -582,13 +710,16 @@ def render_html(metadata: dict, episodes: List[Dict], steps: List[Dict], curvatu
         curvature_mean_data=json.dumps(curvature_mean),
         curvature_std_data=json.dumps(curvature_std),
         reward_terms=json.dumps(REWARD_TERMS),
+        curvature_sections_data=json.dumps(curvature_sections),
     )
 
 
 def main() -> None:
     data = load_data(DATA_PATH)
-    episodes, steps_data, mean_records, std_records = prepare_datasets(data)
-    html = render_html(data["metadata"], episodes, steps_data, mean_records, std_records)
+    episodes, steps_data, mean_records, std_records, curvature_sections = prepare_datasets(data)
+    html = render_html(
+        data["metadata"], episodes, steps_data, mean_records, std_records, curvature_sections
+    )
     OUTPUT_PATH.write_text(html)
     print(f"Wrote {OUTPUT_PATH}")
 
