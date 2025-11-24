@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH = ROOT / "Training" / "Logs" / "training_data.json"
+# DATA_PATH = ROOT / "Training" / "Logs" / "training_data.json"
+DATA_PATH = ROOT / "Training" / "Logs" / "test_training_data.json"
 OUTPUT_PATH = ROOT / "Training" / "Results" / "training_data_overview.html"
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -97,6 +98,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div id="episodes-length"></div>
     <div id="episodes-timesteps"></div>
   </div>
+  <div class="chart-full" id="reward-frequency"></div>
 
   <h2>Step-level signals</h2>
   <div class="chart-full" id="step-reward"></div>
@@ -214,6 +216,68 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Cumulative training timesteps"
     }});
 
+    embedChart("#reward-frequency", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 960,
+      height: 260,
+      data: {{ values: stepsData }},
+      layer: [
+        {{
+          mark: {{ type: "bar", color: "#90caf9" }},
+          encoding: {{
+            x: {{
+              field: "reward",
+              type: "quantitative",
+              bin: {{ maxbins: 40 }},
+              title: "Reward"
+            }},
+            y: {{
+              aggregate: "count",
+              type: "quantitative",
+              title: "Frequency"
+            }},
+            tooltip: [
+              {{ field: "reward", type: "quantitative", bin: true, title: "Reward bin" }},
+              {{ aggregate: "count", type: "quantitative", title: "Frequency" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              aggregate: [
+                {{ op: "mean", field: "reward", as: "mean_reward" }}
+              ]
+            }}
+          ],
+          mark: {{ type: "rule", color: "#1d4ed8", strokeWidth: 2, strokeDash: [4,4] }},
+          encoding: {{
+            x: {{ field: "mean_reward", type: "quantitative" }},
+            tooltip: [
+              {{ field: "mean_reward", type: "quantitative", format: ".2f", title: "Mean reward" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              aggregate: [
+                {{ op: "median", field: "reward", as: "median_reward" }}
+              ]
+            }}
+          ],
+          mark: {{ type: "rule", color: "#ef5350", strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "median_reward", type: "quantitative" }},
+            tooltip: [
+              {{ field: "median_reward", type: "quantitative", format: ".2f", title: "Median reward" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Reward frequency (all steps) with mean/median"
+    }});
+
     embedChart("#step-reward", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 960,
@@ -260,13 +324,35 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           as: ["metric", "value"]
         }}
       ],
-      mark: "line",
-      encoding: {{
-        x: {{ field: "timestep", type: "quantitative" }},
-        y: {{ field: "value", type: "quantitative" }},
-        color: {{ field: "metric", type: "nominal" }}
-      }},
-      title: "Speed signals"
+      layer: [
+        {{
+          mark: {{ type: "line", opacity: 0.35 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative" }},
+            y: {{ field: "value", type: "quantitative" }},
+            color: {{ field: "metric", type: "nominal" }}
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [
+                {{ op: "mean", field: "value", as: "value_avg" }}
+              ],
+              frame: [-500, 0],
+              groupby: ["metric"],
+              sort: [{{ field: "timestep", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative" }},
+            y: {{ field: "value_avg", type: "quantitative" }},
+            color: {{ field: "metric", type: "nominal" }}
+          }}
+        }}
+      ],
+      title: "Speed signals (raw + rolling mean window = 500)"
     }});
 
     embedChart("#step-simtime", {{
