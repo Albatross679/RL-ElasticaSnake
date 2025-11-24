@@ -21,14 +21,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
   <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
   <style>
+    :root {{
+      color-scheme: light;
+    }}
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       margin: 24px;
-      background: #0c111b;
-      color: #e8eefc;
+      background: #f8fbff;
+      color: #102a43;
     }}
     h1, h2, h3 {{
-      color: #f6f8ff;
+      color: #1d2d44;
+      margin-bottom: 12px;
     }}
     .chart-grid {{
       display: grid;
@@ -40,18 +44,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }}
     .metadata {{
       display: flex;
-      gap: 48px;
+      gap: 32px;
       flex-wrap: wrap;
       margin-bottom: 24px;
     }}
     .metadata div {{
-      background: #111829;
+      background: #fff;
       padding: 12px 18px;
-      border-radius: 8px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+      border-radius: 10px;
+      border: 1px solid #e0e7ff;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
     }}
     a {{
-      color: #8ab4ff;
+      color: #1d4ed8;
     }}
   </style>
 </head>
@@ -77,6 +82,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <h2>Reward term contributions</h2>
   <div class="chart-full" id="reward-terms"></div>
+  <h3>Individual terms</h3>
+  <div class="chart-full" id="reward-term-grid"></div>
 
   <h2>Curvature statistics</h2>
   <div class="chart-grid">
@@ -89,10 +96,50 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const stepsData = {steps_data};
     const curvatureMeanData = {curvature_mean_data};
     const curvatureStdData = {curvature_std_data};
+    const rewardTerms = [
+      "forward_progress",
+      "projected_speed",
+      "alignment_bonus",
+      "curvature_oscillation_reward",
+      "curvature_range_penalty",
+      "smoothness_penalty",
+      "lateral_penalty"
+    ];
 
-    const embed = (selector, spec) => vegaEmbed(selector, spec, {{ actions: false }});
+    const baseConfig = {{
+      background: "#ffffff",
+      font: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      axis: {{
+        gridColor: "#e3e7ef",
+        gridOpacity: 0.7,
+        tickColor: "#cbd5f5",
+        labelFontSize: 12,
+        titleFontSize: 13,
+        labelColor: "#1f2933",
+        titleColor: "#1f2933"
+      }},
+      header: {{
+        labelFontSize: 14,
+        titleFontSize: 16,
+        labelFontWeight: 600,
+        labelColor: "#1f2933",
+        titleColor: "#1f2933"
+      }},
+      legend: {{
+        labelFontSize: 12,
+        titleFontSize: 13,
+        direction: "horizontal",
+        orient: "bottom"
+      }},
+      view: {{
+        stroke: "#e3e7ef"
+      }}
+    }};
 
-    embed("#episodes-reward", {{
+    const embedChart = (selector, spec) =>
+      vegaEmbed(selector, {{ ...spec, config: baseConfig }}, {{ actions: false }});
+
+    embedChart("#episodes-reward", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 360,
       height: 200,
@@ -109,7 +156,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Episode reward"
     }});
 
-    embed("#episodes-length", {{
+    embedChart("#episodes-length", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 360,
       height: 200,
@@ -126,7 +173,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Episode lengths"
     }});
 
-    embed("#episodes-timesteps", {{
+    embedChart("#episodes-timesteps", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 360,
       height: 200,
@@ -143,7 +190,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Cumulative training timesteps"
     }});
 
-    embed("#step-reward", {{
+    embedChart("#step-reward", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 960,
       height: 260,
@@ -174,7 +221,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Step reward (rolling mean window = 200)"
     }});
 
-    embed("#step-speed", {{
+    embedChart("#step-speed", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 960,
       height: 260,
@@ -198,7 +245,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Speed signals"
     }});
 
-    embed("#step-simtime", {{
+    embedChart("#step-simtime", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 960,
       height: 220,
@@ -222,7 +269,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Simulation time and episode index"
     }});
 
-    embed("#reward-terms", {{
+    embedChart("#reward-terms", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 960,
       height: 320,
@@ -250,7 +297,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Reward term breakdown"
     }});
 
-    embed("#curvature-mean", {{
+    embedChart("#curvature-mean", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 360,
       height: 220,
@@ -269,7 +316,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Mean curvature"
     }});
 
-    embed("#curvature-std", {{
+    embedChart("#curvature-std", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 360,
       height: 220,
@@ -287,6 +334,103 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       }},
       title: "Curvature standard deviation"
     }});
+
+    const axisLabelExpr = "abs(datum.value) < 1e-3 ? format(datum.value, '.1e') : abs(datum.value) >= 1000 ? format(datum.value, '.2s') : format(datum.value, '.3f')";
+
+    const rewardTermGridSpec = {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      data: {{ values: stepsData }},
+      transform: [
+        {{
+          fold: rewardTerms,
+          as: ["term", "value"]
+        }},
+        {{
+          calculate: "datum.term === 'forward_progress' ? 'Forward progress' : datum.term === 'projected_speed' ? 'Projected speed' : datum.term === 'alignment_bonus' ? 'Alignment bonus' : datum.term === 'curvature_oscillation_reward' ? 'Curvature oscillation reward' : datum.term === 'curvature_range_penalty' ? 'Curvature range penalty' : datum.term === 'smoothness_penalty' ? 'Smoothness penalty' : 'Lateral penalty'",
+          as: "term_label"
+        }}
+      ],
+      facet: {{
+        columns: 2,
+        row: {{
+          field: "term_label",
+          type: "nominal",
+          title: null
+        }}
+      }},
+      spec: {{
+        encoding: {{
+          x: {{
+            field: "timestep",
+            type: "quantitative",
+            title: "Timestep"
+          }}
+        }},
+        layer: [
+          {{
+            mark: {{
+              type: "line",
+              color: "#b0bec5",
+              opacity: 0.35
+            }},
+            encoding: {{
+              y: {{
+                field: "value",
+                type: "quantitative",
+                axis: {{
+                  title: null,
+                  tickCount: 5,
+                  labelExpr: axisLabelExpr
+                }}
+              }},
+              tooltip: [
+                {{ field: "timestep", type: "quantitative" }},
+                {{ field: "value", type: "quantitative", format: ".3f" }}
+              ]
+            }}
+          }},
+          {{
+            transform: [
+              {{
+                window: [
+                  {{
+                    op: "mean",
+                    field: "value",
+                    as: "value_smoothed"
+                  }}
+                ],
+                frame: [-200, 0],
+                groupby: ["term"],
+                sort: [
+                  {{
+                    field: "timestep",
+                    order: "ascending"
+                  }}
+                ]
+              }}
+            ],
+            mark: {{
+              type: "line",
+              color: "#1976d2",
+              strokeWidth: 2
+            }},
+            encoding: {{
+              y: {{
+                field: "value_smoothed",
+                type: "quantitative"
+              }}
+            }}
+          }}
+        ]
+      }},
+      resolve: {{
+        scale: {{
+          y: "independent"
+        }}
+      }}
+    }};
+
+    embedChart("#reward-term-grid", rewardTermGridSpec);
   </script>
 </body>
 </html>
