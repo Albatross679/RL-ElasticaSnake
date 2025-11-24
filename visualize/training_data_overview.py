@@ -12,6 +12,16 @@ DATA_PATH = ROOT / "Training" / "Logs" / "training_data.json"
 OUTPUT_PATH = ROOT / "Training" / "Results" / "training_data_overview.html"
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+REWARD_TERMS = [
+    "forward_progress",
+    "projected_speed",
+    "alignment_bonus",
+    "curvature_oscillation_reward",
+    "curvature_range_penalty",
+    "smoothness_penalty",
+    "lateral_penalty",
+]
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -58,6 +68,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     a {{
       color: #1d4ed8;
     }}
+    .term-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      margin-top: 16px;
+    }}
+    .term-panel {{
+      background: #fff;
+      border: 1px solid #e0e7ff;
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+    }}
   </style>
 </head>
 <body>
@@ -83,7 +106,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <h2>Reward term contributions</h2>
   <div class="chart-full" id="reward-terms"></div>
   <h3>Individual terms</h3>
-  <div class="chart-full" id="reward-term-grid"></div>
+  <div class="term-grid" id="reward-term-grid"></div>
 
   <h2>Curvature statistics</h2>
   <div class="chart-grid">
@@ -96,15 +119,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const stepsData = {steps_data};
     const curvatureMeanData = {curvature_mean_data};
     const curvatureStdData = {curvature_std_data};
-    const rewardTerms = [
-      "forward_progress",
-      "projected_speed",
-      "alignment_bonus",
-      "curvature_oscillation_reward",
-      "curvature_range_penalty",
-      "smoothness_penalty",
-      "lateral_penalty"
-    ];
+    const rewardTerms = {reward_terms};
+    const rewardTermLabels = {{
+      forward_progress: "Forward progress",
+      projected_speed: "Projected speed",
+      alignment_bonus: "Alignment bonus",
+      curvature_oscillation_reward: "Curvature oscillation reward",
+      curvature_range_penalty: "Curvature range penalty",
+      smoothness_penalty: "Smoothness penalty",
+      lateral_penalty: "Lateral penalty"
+    }};
 
     const baseConfig = {{
       background: "#ffffff",
@@ -337,100 +361,58 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     const axisLabelExpr = "abs(datum.value) < 1e-3 ? format(datum.value, '.1e') : abs(datum.value) >= 1000 ? format(datum.value, '.2s') : format(datum.value, '.3f')";
 
-    const rewardTermGridSpec = {{
+    const createTermSpec = (term) => ({{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       data: {{ values: stepsData }},
-      transform: [
+      width: 320,
+      height: 220,
+      encoding: {{
+        x: {{
+          field: "timestep",
+          type: "quantitative",
+          title: "Timestep"
+        }}
+      }},
+      layer: [
         {{
-          fold: rewardTerms,
-          as: ["term", "value"]
+          mark: {{ type: "line", color: "#b0bec5", opacity: 0.35 }},
+          encoding: {{
+            y: {{
+              field: term,
+              type: "quantitative",
+              axis: {{ title: null, tickCount: 5, labelExpr: axisLabelExpr }}
+            }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: term, type: "quantitative", format: ".3f" }}
+            ]
+          }}
         }},
         {{
-          calculate: "datum.term === 'forward_progress' ? 'Forward progress' : datum.term === 'projected_speed' ? 'Projected speed' : datum.term === 'alignment_bonus' ? 'Alignment bonus' : datum.term === 'curvature_oscillation_reward' ? 'Curvature oscillation reward' : datum.term === 'curvature_range_penalty' ? 'Curvature range penalty' : datum.term === 'smoothness_penalty' ? 'Smoothness penalty' : 'Lateral penalty'",
-          as: "term_label"
+          transform: [
+            {{
+              window: [{{ op: "mean", field: term, as: "value_smoothed" }}],
+              frame: [-200, 0],
+              sort: [{{ field: "timestep", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#1976d2", strokeWidth: 2 }},
+          encoding: {{
+            y: {{ field: "value_smoothed", type: "quantitative" }}
+          }}
         }}
       ],
-      facet: {{
-        columns: 2,
-        row: {{
-          field: "term_label",
-          type: "nominal",
-          title: null
-        }}
-      }},
-      spec: {{
-        encoding: {{
-          x: {{
-            field: "timestep",
-            type: "quantitative",
-            title: "Timestep"
-          }}
-        }},
-        layer: [
-          {{
-            mark: {{
-              type: "line",
-              color: "#b0bec5",
-              opacity: 0.35
-            }},
-            encoding: {{
-              y: {{
-                field: "value",
-                type: "quantitative",
-                axis: {{
-                  title: null,
-                  tickCount: 5,
-                  labelExpr: axisLabelExpr
-                }}
-              }},
-              tooltip: [
-                {{ field: "timestep", type: "quantitative" }},
-                {{ field: "value", type: "quantitative", format: ".3f" }}
-              ]
-            }}
-          }},
-          {{
-            transform: [
-              {{
-                window: [
-                  {{
-                    op: "mean",
-                    field: "value",
-                    as: "value_smoothed"
-                  }}
-                ],
-                frame: [-200, 0],
-                groupby: ["term"],
-                sort: [
-                  {{
-                    field: "timestep",
-                    order: "ascending"
-                  }}
-                ]
-              }}
-            ],
-            mark: {{
-              type: "line",
-              color: "#1976d2",
-              strokeWidth: 2
-            }},
-            encoding: {{
-              y: {{
-                field: "value_smoothed",
-                type: "quantitative"
-              }}
-            }}
-          }}
-        ]
-      }},
-      resolve: {{
-        scale: {{
-          y: "independent"
-        }}
-      }}
-    }};
+      title: rewardTermLabels[term]
+    }});
 
-    embedChart("#reward-term-grid", rewardTermGridSpec);
+    const termGridEl = document.getElementById("reward-term-grid");
+    rewardTerms.forEach((term) => {{
+      const panel = document.createElement("div");
+      panel.className = "term-panel";
+      panel.id = `reward-term-${{term}}`;
+      termGridEl.appendChild(panel);
+      embedChart(`#${{panel.id}}`, createTermSpec(term));
+    }});
   </script>
 </body>
 </html>
@@ -513,6 +495,7 @@ def render_html(metadata: dict, episodes: List[Dict], steps: List[Dict], curvatu
         steps_data=json.dumps(steps),
         curvature_mean_data=json.dumps(curvature_mean),
         curvature_std_data=json.dumps(curvature_std),
+        reward_terms=json.dumps(REWARD_TERMS),
     )
 
 
