@@ -5,7 +5,7 @@ __pycache__/
 .DS_Store
 logs/
 Training/
-developing/
+# developing/
 policy_gradient_visualizations/
 videos/
 documents/
