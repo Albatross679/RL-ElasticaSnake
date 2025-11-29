@@ -32,7 +32,7 @@ REWARD_WEIGHTS = {
 
 # Training configuration
 TRAIN_CONFIG = {
-    "total_timesteps": 50000,  # Change to 50_000 or more for full training
+    "total_timesteps": 1_000_000,  # Change to 50_000 or more for full training
     "print_freq": 100,  # Controls both step-level and episode-level printing frequency
     "step_info_keys": ["forward_speed",
                        "lateral_speed", 
@@ -59,6 +59,12 @@ MODEL_CONFIG = {
     "gamma": 0.99,
     "policy": "MlpPolicy",
     "verbose": 1,
+    # Policy network architecture options
+    # Set use_layer_norm=True to enable layer normalization in the policy network
+    # Layer normalization can help with training stability when observations have
+    # different scales (e.g., velocities vs curvatures vs positions)
+    "use_layer_norm": True,  # Set to True to enable layer normalization
+    "net_arch": None,  # None uses default [64, 64]. Can specify custom: [dict(pi=[128, 128], vf=[128, 128])]
 }
 
 # Paths

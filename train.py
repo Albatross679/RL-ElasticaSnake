@@ -60,6 +60,47 @@ def main():
     
     # Create PPO model
     print("\nCreating PPO model...")
+    
+    # Configure policy kwargs (for layer normalization, custom network architecture, etc.)
+    policy_kwargs = {}
+    
+    # Custom network architecture if specified
+    if config.MODEL_CONFIG.get("net_arch") is not None:
+        policy_kwargs["net_arch"] = config.MODEL_CONFIG["net_arch"]
+        print(f"  Using custom network architecture: {config.MODEL_CONFIG['net_arch']}")
+    
+    # Layer normalization: Create custom feature extractor with layer normalization
+    if config.MODEL_CONFIG.get("use_layer_norm", False):
+        from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+        import torch.nn as nn
+        import torch
+        
+        # Custom feature extractor with layer normalization
+        class LayerNormFeatureExtractor(BaseFeaturesExtractor):
+            """
+            Feature extractor with layer normalization.
+            Normalizes activations across features for each sample independently,
+            which helps with training stability when observations have different scales.
+            """
+            def __init__(self, observation_space, features_dim: int = 64):
+                super().__init__(observation_space, features_dim)
+                n_input = observation_space.shape[0]
+                self.net = nn.Sequential(
+                    nn.Linear(n_input, features_dim),
+                    nn.LayerNorm(features_dim),
+                    nn.Tanh(),
+                    nn.Linear(features_dim, features_dim),
+                    nn.LayerNorm(features_dim),
+                    nn.Tanh(),
+                )
+            
+            def forward(self, observations: torch.Tensor) -> torch.Tensor:
+                return self.net(observations)
+        
+        policy_kwargs["features_extractor_class"] = LayerNormFeatureExtractor
+        policy_kwargs["features_extractor_kwargs"] = {"features_dim": 64}
+        print("  ✓ Layer normalization enabled in policy network")
+    
     model = PPO(
         config.MODEL_CONFIG["policy"],
         env,
@@ -67,6 +108,7 @@ def main():
         gae_lambda=config.MODEL_CONFIG["gae_lambda"], # <--- The GAE Parameter
         n_steps=config.MODEL_CONFIG["n_steps"],    # <--- The Rollout Buffer Size
         verbose=config.MODEL_CONFIG["verbose"],
+        policy_kwargs=policy_kwargs if policy_kwargs else None,
         # tensorboard_log=config.PATHS["log_dir"]  # Uncomment for tensorboard logging
     )
     
