@@ -12,6 +12,12 @@ from typing import Optional
 from numpy.typing import NDArray
 from elastica.typing import RodType
 
+# Constants
+CURVATURE_HISTORY_WINDOW = 50
+CURVATURE_MIN = 9.0
+CURVATURE_MAX = 15.0
+RENDERING_FPS = 60
+
 
 class RewardCalculator:
     """
@@ -59,7 +65,7 @@ class RewardCalculator:
             forward_progress: Progress in the target direction
             lateral: Lateral movement magnitude
             curvature_array: Current curvature array (3, n_elem-1)
-            curvature_history: List of curvature arrays from last 50 steps
+            curvature_history: List of curvature arrays from last CURVATURE_HISTORY_WINDOW steps
             prev_curvature_array: Previous step curvature array (for oscillation)
             torque_coeffs: Current torque coefficients
             prev_torque_coeffs: Previous torque coefficients (for smoothness)
@@ -118,21 +124,21 @@ class RewardCalculator:
     
     def _calculate_lateral_penalty(self, lateral: float) -> float:
         """Calculate lateral movement penalty."""
-        return self.reward_weights["lateral_penalty"] * float(lateral)
+        return self.reward_weights["lateral_penalty"] * lateral
     
     def _calculate_curvature_range_penalty(
         self, curvature_history: list[NDArray[np.float64]]
     ) -> float:
         """
-        Calculate curvature range penalty based on 50-step average.
-        If mean curvature of each element stays within [9,15], do nothing.
-        If mean goes beyond [9,15], penalize proportional to the difference.
+        Calculate curvature range penalty based on CURVATURE_HISTORY_WINDOW-step average.
+        If mean curvature of each element stays within [CURVATURE_MIN, CURVATURE_MAX], do nothing.
+        If mean goes beyond [CURVATURE_MIN, CURVATURE_MAX], penalize proportional to the difference.
         """
         if len(curvature_history) == 0:
             return 0.0
         
-        # Use last 50 steps (or all available if less than 50)
-        history_window = curvature_history[-50:] if len(curvature_history) >= 50 else curvature_history
+        # Use last CURVATURE_HISTORY_WINDOW steps (or all available if less)
+        history_window = curvature_history[-CURVATURE_HISTORY_WINDOW:] if len(curvature_history) >= CURVATURE_HISTORY_WINDOW else curvature_history
         
         # Stack curvature arrays: shape (n_steps, 3, n_elem-1)
         curvature_stack = np.stack(history_window, axis=0)
@@ -143,15 +149,13 @@ class RewardCalculator:
         # Calculate mean curvature for each element over the window: shape (n_elem-1,)
         mean_curvatures = np.mean(curvature_magnitudes, axis=0)
         
-        # Penalize if mean is outside [9, 15]
+        # Penalize if mean is outside [CURVATURE_MIN, CURVATURE_MAX]
         penalty = 0.0
         for mean_curv in mean_curvatures:
-            if mean_curv < 9.0:
-                # Below lower bound: penalize by distance from 9
-                penalty += (9.0 - mean_curv)
-            elif mean_curv > 15.0:
-                # Above upper bound: penalize by distance from 15
-                penalty += (mean_curv - 15.0)
+            if mean_curv < CURVATURE_MIN:
+                penalty += (CURVATURE_MIN - mean_curv)
+            elif mean_curv > CURVATURE_MAX:
+                penalty += (mean_curv - CURVATURE_MAX)
         
         return self.reward_weights["curvature_range_penalty"] * penalty
     
@@ -173,7 +177,7 @@ class RewardCalculator:
         
         # Calculate absolute differences and sum
         abs_differences = np.abs(current_magnitudes - prev_magnitudes)
-        oscillation_sum = float(np.sum(abs_differences))
+        oscillation_sum = np.sum(abs_differences)
         
         return self.reward_weights["curvature_oscillation_reward"] * oscillation_sum
     
@@ -182,7 +186,7 @@ class RewardCalculator:
         weight = self.reward_weights["energy_penalty"]
         if weight == 0.0:
             return 0.0
-        return weight * float(np.linalg.norm(torque_coeffs) ** 2)
+        return weight * np.linalg.norm(torque_coeffs) ** 2
     
     def _calculate_smoothness_penalty(
         self,
@@ -193,9 +197,7 @@ class RewardCalculator:
         if prev_torque_coeffs is None:
             return 0.0
         delta_torque = torque_coeffs - prev_torque_coeffs
-        return self.reward_weights["smoothness_penalty"] * float(
-            np.linalg.norm(delta_torque) ** 2
-        )
+        return self.reward_weights["smoothness_penalty"] * np.linalg.norm(delta_torque) ** 2
     
     def _calculate_alignment_bonus(
         self,
@@ -218,7 +220,7 @@ class RewardCalculator:
     
     def _calculate_projected_speed(self, velocity_projection: float) -> float:
         """Calculate projected speed reward."""
-        return self.reward_weights["projected_speed"] * float(velocity_projection)
+        return self.reward_weights["projected_speed"] * velocity_projection
 
 
 class BaseContinuumSnakeEnv(gym.Env):
@@ -243,19 +245,14 @@ class BaseContinuumSnakeEnv(gym.Env):
             obs_keys = ["position", "velocity", "director"]
         self.obs_keys = obs_keys
 
-        valid_keys = [
-            "time",
-            "avg_position",
-            "avg_velocity",
-            "curvature",
-            "tangents",
-            "position",
-            "velocity",
-            "director",
-        ]
-        for key in self.obs_keys:
-            if key not in valid_keys:
-                raise ValueError(f"Invalid observation key: {key}. Valid keys are: {valid_keys}")
+        valid_keys = {
+            "time", "avg_position", "avg_velocity", "curvature",
+            "tangents", "position", "velocity", "director",
+            "relative_position",
+        }
+        invalid_keys = [key for key in self.obs_keys if key not in valid_keys]
+        if invalid_keys:
+            raise ValueError(f"Invalid observation keys: {invalid_keys}. Valid keys are: {sorted(valid_keys)}")
 
         obs_size = self._calculate_obs_size()
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_size,), dtype=np.float32)
@@ -295,12 +292,12 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.alignment_speed_tol = 1e-4
         self._alignment_streak = 0
         self.velocity_projection = 0.0
-        self._last_velocity_vec = np.zeros(3, dtype=np.float64)
+        self.reward = 0.0  # Initialize reward attribute
 
         # Initialize reward calculator with default weights
         self.reward_calculator = RewardCalculator()
         self._prev_torque_coeffs = None
-        self._curvature_history = []  # Store last 50 steps of curvature
+        self._curvature_history = []  # Store last CURVATURE_HISTORY_WINDOW steps of curvature
         self._prev_curvature_array = None  # Previous step curvature for oscillation
 
         self.callback_data = defaultdict(list)
@@ -316,6 +313,7 @@ class BaseContinuumSnakeEnv(gym.Env):
             "position": [],
             "velocity": [],
             "director": [],
+            "relative_position": [],
             "torque_coeffs": [],
             "wave_number": [],
             "forward": [],
@@ -375,6 +373,7 @@ class BaseContinuumSnakeEnv(gym.Env):
             "position": n_nodes * 3,
             "velocity": n_nodes * 3,
             "director": n_elem * 9,
+            "relative_position": n_nodes * 3,
         }
         return sum(key_sizes[key] for key in self.obs_keys)
 
@@ -398,6 +397,9 @@ class BaseContinuumSnakeEnv(gym.Env):
         )
 
         wave_length = b_coeff[-1]
+        # Prevent division by zero - ensure minimum wavelength
+        if abs(wave_length) < 1e-12:
+            wave_length = 1e-12 if wave_length >= 0 else -1e-12
         b_coeff_only = b_coeff[:-1]
         snake_sim.add_forcing_to(self.shearable_rod).using(
             ea.MuscleTorques,
@@ -439,8 +441,7 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         if not hasattr(self, "callback_data") or self.callback_data is None:
             self.callback_data = defaultdict(list)
-        rendering_fps = 60
-        step_skip = int(1.0 / (rendering_fps * self.time_step))
+        step_skip = int(1.0 / (RENDERING_FPS * self.time_step))
         slip_velocity_tol = self.slip_velocity_tol
 
         class ContinuumSnakeCallBack(ea.CallBackBaseClass):
@@ -508,23 +509,22 @@ class BaseContinuumSnakeEnv(gym.Env):
         return snake_sim
 
     def _get_obs_value_from_rod(self, key: str):
-        if key == "position":
-            return self.shearable_rod.position_collection.ravel()
-        if key == "velocity":
-            return self.shearable_rod.velocity_collection.ravel()
-        if key == "director":
-            return self.shearable_rod.director_collection.ravel()
-        if key == "curvature":
-            return self.shearable_rod.kappa.ravel()
-        if key == "tangents":
-            return self.shearable_rod.tangents.ravel()
-        if key == "avg_position":
-            return self.shearable_rod.compute_position_center_of_mass()
-        if key == "avg_velocity":
-            return self.shearable_rod.compute_velocity_center_of_mass()
-        if key == "time":
-            return np.array([self.current_time])
-        raise ValueError(f"Unknown observation key: {key}")
+        """Get observation value from rod using dictionary lookup."""
+        rod = self.shearable_rod
+        obs_map = {
+            "position": lambda: rod.position_collection.ravel(),
+            "velocity": lambda: rod.velocity_collection.ravel(),
+            "director": lambda: rod.director_collection.ravel(),
+            "curvature": lambda: rod.kappa.ravel(),
+            "tangents": lambda: rod.tangents.ravel(),
+            "avg_position": lambda: rod.compute_position_center_of_mass(),
+            "avg_velocity": lambda: rod.compute_velocity_center_of_mass(),
+            "time": lambda: np.array([self.current_time]),
+            "relative_position": lambda: (rod.position_collection - rod.compute_position_center_of_mass().reshape(3, 1)).ravel(),
+        }
+        if key not in obs_map:
+            raise ValueError(f"Unknown observation key: {key}")
+        return obs_map[key]()
 
     def _get_obs(self):
         obs_parts = []
@@ -537,10 +537,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         for key in self.obs_keys:
             if use_state_dict and key in self.state_dict and len(self.state_dict[key]) > 0:
                 latest_value = self.state_dict[key][-1]
-                if isinstance(latest_value, np.ndarray):
-                    obs_parts.append(latest_value.ravel())
-                else:
-                    obs_parts.append(np.array([latest_value]))
+                value = latest_value.ravel() if isinstance(latest_value, np.ndarray) else np.array([latest_value])
+                obs_parts.append(value)
             else:
                 obs_parts.append(self._get_obs_value_from_rod(key))
 
@@ -560,7 +558,6 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.reward = 0.0
         self.velocity_projection = 0.0
         self._alignment_streak = 0
-        self._last_velocity_vec = np.zeros(3, dtype=np.float64)
         self._prev_torque_coeffs = None
         self._curvature_history = []
         self._prev_curvature_array = None
@@ -581,7 +578,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         reset_action = self._default_action()
         if options is not None and "action" in options:
             reset_action = np.asarray(options["action"], dtype=np.float64)
-        reset_action = np.asarray(reset_action, dtype=np.float64)
+        else:
+            reset_action = np.asarray(reset_action, dtype=np.float64)
         b_coeff = self._augment_action(reset_action)
 
         self.sim = self._transition_model(b_coeff)
@@ -600,10 +598,7 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         disp = com - self._prev_com
         velocity_vec = disp / (sim_time + 1e-12)
-        new_dir = velocity_vec / (np.linalg.norm(velocity_vec) + 1e-12)
-        alpha = 1.0
-        self._dir = (1 - alpha) * self._dir + alpha * new_dir
-        self._dir /= np.linalg.norm(self._dir) + 1e-12
+        self._dir = velocity_vec / (np.linalg.norm(velocity_vec) + 1e-12)
 
         forward = float(np.dot(velocity_vec, self._dir))
         lateral = float(
@@ -655,21 +650,23 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.state_dict["director"].append(
             self.shearable_rod.director_collection.copy()
         )
+        com = self.shearable_rod.compute_position_center_of_mass()
+        relative_positions = self.shearable_rod.position_collection - com.reshape(3, 1)
+        self.state_dict["relative_position"].append(relative_positions.copy())
 
         self._prev_com = prev_com_before
         self.forward, self.lateral, velocity_vec = self._forward_lateral_from_last_step(sim_time)
-        self._last_velocity_vec = velocity_vec
         current_com = self.shearable_rod.compute_position_center_of_mass()
         self.velocity_projection = float(np.dot(velocity_vec, self.target_direction))
 
         speed = float(np.linalg.norm(velocity_vec))
         alignment = 0.0
         if speed > self.alignment_speed_tol:
-            alignment = float(
-                np.dot(velocity_vec / (speed + 1e-12), self.target_direction)
-            )
-        if speed > self.alignment_speed_tol and alignment >= self._alignment_dot_threshold:
-            self._alignment_streak += 1
+            alignment = float(np.dot(velocity_vec / (speed + 1e-12), self.target_direction))
+            if alignment >= self._alignment_dot_threshold:
+                self._alignment_streak += 1
+            else:
+                self._alignment_streak = 0
         else:
             self._alignment_streak = 0
 
@@ -677,9 +674,9 @@ class BaseContinuumSnakeEnv(gym.Env):
         forward_progress = float(np.dot(current_com - prev_com_before, self.target_direction))
         curvature_array = self.shearable_rod.kappa.copy()
         
-        # Update curvature history (keep last 50 steps)
+        # Update curvature history (keep last CURVATURE_HISTORY_WINDOW steps)
         self._curvature_history.append(curvature_array)
-        if len(self._curvature_history) > 50:
+        if len(self._curvature_history) > CURVATURE_HISTORY_WINDOW:
             self._curvature_history.pop(0)
 
         # Calculate reward using the reward calculator
@@ -704,7 +701,10 @@ class BaseContinuumSnakeEnv(gym.Env):
         self._prev_curvature_array = curvature_array.copy()
 
         self.state_dict["torque_coeffs"].append(torque_coeffs.copy())
-        self.state_dict["wave_number"].append(2.0 * np.pi / b_coeff[-1])
+        wave_length_for_state = b_coeff[-1]
+        if abs(wave_length_for_state) < 1e-12:
+            wave_length_for_state = 1e-12 if wave_length_for_state >= 0 else -1e-12
+        self.state_dict["wave_number"].append(2.0 * np.pi / wave_length_for_state)
         self.state_dict["forward"].append(float(self.forward))
         self.state_dict["lateral"].append(float(self.lateral))
         self.state_dict["reward"].append(float(self.reward))
@@ -716,24 +716,23 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         observation = self._get_obs()
 
-        info = {}
-        info["reward"] = float(reward)
-        info["reward_terms"] = reward_terms
-        info["forward_speed"] = float(self.forward)
-        info["lateral_speed"] = float(self.lateral)
-        info["velocity_projection"] = float(self.velocity_projection)
-        info["forward_progress"] = forward_progress
-        info["speed"] = speed
-        info["alignment"] = alignment
-        info["alignment_streak"] = int(self._alignment_streak)
-        info["alignment_goal_met"] = bool(terminated_due_to_alignment)
-        info["position"] = current_com.astype(float)
-        info["heading_dir"] = self._dir.astype(float)
-        info["current_time"] = float(self.current_time)
-        # Add curvatures of each element (shape: 3, n_elem-1) as a list for JSON serialization
-        info["curvatures"] = curvature_array.astype(float).tolist()
-        # Record the raw action supplied to the environment for downstream logging
-        info["action"] = action.astype(float).tolist()
+        info = {
+            "reward": float(reward),
+            "reward_terms": reward_terms,
+            "forward_speed": float(self.forward),
+            "lateral_speed": float(self.lateral),
+            "velocity_projection": float(self.velocity_projection),
+            "forward_progress": forward_progress,
+            "speed": speed,
+            "alignment": alignment,
+            "alignment_streak": int(self._alignment_streak),
+            "alignment_goal_met": bool(terminated_due_to_alignment),
+            "position": current_com.astype(float),
+            "heading_dir": self._dir.astype(float),
+            "current_time": float(self.current_time),
+            "curvatures": curvature_array.astype(float).tolist(),  # For JSON serialization
+            "action": action.astype(float).tolist(),  # Raw action for logging
+        }
 
         return observation, reward, terminated, truncated, info
 
@@ -800,51 +799,48 @@ class VariableWavelengthContinuumSnakeEnv(BaseContinuumSnakeEnv):
 class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
     """
     Variant of FixedWavelengthContinuumSnakeEnv that filters out y-components
-    (vertical axis) from velocity, avg_velocity, curvature, and tangents observations.
-    Only x and z components are included in the observation space.
+    (vertical axis) from all spatial observations. Only x and z components are
+    included in the observation space for position, velocity, avg_position,
+    avg_velocity, curvature, tangents, and director.
     """
     
     def _calculate_obs_size(self) -> int:
-        """Calculate observation size with 2D (x,z) instead of 3D for filtered keys."""
+        """Calculate observation size with 2D (x,z) instead of 3D for all spatial keys."""
         n_elem = self._n_elem
         n_nodes = n_elem + 1
-        # Keys that should be 2D (x,z only): avg_velocity, curvature, velocity, tangents
-        keys_2d = {"avg_velocity", "curvature", "velocity", "tangents"}
-        
+        # All spatial keys are 2D (x,z only): position, velocity, avg_position, avg_velocity, curvature, tangents
+        # Director is 3x3 matrices, so we keep 2 rows (x,z) -> 2*3 = 6 per element
         key_sizes = {
             "time": 1,
-            "avg_position": 3,  # Keep full 3D for avg_position
-            "avg_velocity": 2 if "avg_velocity" in keys_2d else 3,
-            "curvature": (n_elem - 1) * 2 if "curvature" in keys_2d else (n_elem - 1) * 3,
-            "tangents": n_elem * 2 if "tangents" in keys_2d else n_elem * 3,
-            "position": n_nodes * 3,  # Keep full 3D for position
-            "velocity": n_nodes * 2 if "velocity" in keys_2d else n_nodes * 3,
-            "director": n_elem * 9,
+            "avg_position": 2,  # 2D (x,z)
+            "avg_velocity": 2,  # 2D (x,z)
+            "curvature": (n_elem - 1) * 2,  # 2D (x,z)
+            "tangents": n_elem * 2,  # 2D (x,z)
+            "position": n_nodes * 2,  # 2D (x,z)
+            "velocity": n_nodes * 2,  # 2D (x,z)
+            "director": n_elem * 6,  # 2 rows (x,z) of 3x3 matrix = 6 per element
+            "relative_position": n_nodes * 2,  # 2D (x,z)
         }
         return sum(key_sizes[key] for key in self.obs_keys)
     
     def _filter_2d_value(self, key: str, value: NDArray[np.float64]) -> NDArray[np.float64]:
         """
-        Filter out y-component (index 1) from observation values for keys that need 2D filtering.
+        Filter out y-component (index 1) from observation values for all spatial keys.
         """
-        keys_2d = {"avg_velocity", "curvature", "velocity", "tangents"}
-        if key not in keys_2d:
-            return value
+        # All spatial keys are filtered to 2D (x,z)
+        if key == "time":
+            return value  # Scalar, no filtering needed
         
-        if key == "avg_velocity":
+        if key in {"avg_position", "avg_velocity"}:
             # Shape: (3,) -> select indices 0,2 (x,z)
             return value[[0, 2]]
-        elif key == "curvature":
-            # Shape: (3, n_elem-1) -> select rows 0,2 (x,z) -> flatten
-            return value[[0, 2], :].ravel()
-        elif key == "velocity":
-            # Shape: (3, n_nodes) -> select rows 0,2 (x,z) -> flatten
-            return value[[0, 2], :].ravel()
-        elif key == "tangents":
-            # Shape: (3, n_elem) -> select rows 0,2 (x,z) -> flatten
-            return value[[0, 2], :].ravel()
+        elif key == "director":
+            # Shape: (3, 3, n_elem) -> select rows 0,2 (x,z) -> (2, 3, n_elem) -> flatten
+            return value[[0, 2], :, :].ravel()
         else:
-            return value
+            # Shape: (3, n) -> select rows 0,2 (x,z) -> flatten
+            # Applies to: position, velocity, curvature, tangents, relative_position
+            return value[[0, 2], :].ravel()
     
     def _get_obs(self):
         """
@@ -861,12 +857,10 @@ class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
             if use_state_dict and key in self.state_dict and len(self.state_dict[key]) > 0:
                 latest_value = self.state_dict[key][-1]
                 if isinstance(latest_value, np.ndarray):
-                    # Filter 2D keys to remove y-component
-                    filtered_value = self._filter_2d_value(key, latest_value)
-                    # filtered_value is already flattened for 2D keys, just ensure it's 1D
-                    obs_parts.append(filtered_value.ravel())
+                    value = self._filter_2d_value(key, latest_value).ravel()
                 else:
-                    obs_parts.append(np.array([latest_value]))
+                    value = np.array([latest_value])
+                obs_parts.append(value)
             else:
                 obs_parts.append(self._get_obs_value_from_rod(key))
 
@@ -875,31 +869,39 @@ class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
     def _get_obs_value_from_rod(self, key: str):
         """
         Get observation value from rod, filtering out y-component (index 1)
-        for avg_velocity, curvature, velocity, and tangents.
+        for all spatial keys to make them 2D (x,z only).
         """
-        if key == "position":
-            return self.shearable_rod.position_collection.ravel()
-        if key == "velocity":
-            # Shape: (3, n_nodes) -> select rows 0,2 (x,z) -> flatten
-            vel = self.shearable_rod.velocity_collection
-            return vel[[0, 2], :].ravel()
-        if key == "director":
-            return self.shearable_rod.director_collection.ravel()
-        if key == "curvature":
-            # Shape: (3, n_elem-1) -> select rows 0,2 (x,z) -> flatten
-            kappa = self.shearable_rod.kappa
-            return kappa[[0, 2], :].ravel()
-        if key == "tangents":
-            # Shape: (3, n_elem) -> select rows 0,2 (x,z) -> flatten
-            tangents = self.shearable_rod.tangents
-            return tangents[[0, 2], :].ravel()
-        if key == "avg_position":
-            return self.shearable_rod.compute_position_center_of_mass()
-        if key == "avg_velocity":
-            # Shape: (3,) -> select indices 0,2 (x,z)
-            avg_vel = self.shearable_rod.compute_velocity_center_of_mass()
-            return avg_vel[[0, 2]]
+        rod = self.shearable_rod
+        
+        # Handle scalar key
         if key == "time":
             return np.array([self.current_time])
+        
+        # Handle 1D spatial keys (avg_position, avg_velocity)
+        if key == "avg_position":
+            return rod.compute_position_center_of_mass()[[0, 2]]
+        elif key == "avg_velocity":
+            return rod.compute_velocity_center_of_mass()[[0, 2]]
+        
+        # Handle 2D spatial keys (position, velocity, curvature, tangents, relative_position)
+        elif key in {"position", "velocity", "curvature", "tangents", "relative_position"}:
+            if key == "relative_position":
+                com = rod.compute_position_center_of_mass()
+                relative_positions = rod.position_collection - com.reshape(3, 1)
+                return relative_positions[[0, 2], :].ravel()
+            else:
+                attr_map = {
+                    "position": rod.position_collection,
+                    "velocity": rod.velocity_collection,
+                    "curvature": rod.kappa,
+                    "tangents": rod.tangents,
+                }
+                return attr_map[key][[0, 2], :].ravel()
+        
+        # Handle director (3D matrix per element)
+        elif key == "director":
+            # Shape: (3, 3, n_elem) -> select rows 0,2 (x,z) -> (2, 3, n_elem) -> flatten
+            return rod.director_collection[[0, 2], :, :].ravel()
+        
         raise ValueError(f"Unknown observation key: {key}")
 

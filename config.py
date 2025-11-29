@@ -5,7 +5,10 @@ Configuration file for RL training
 # Environment configuration
 ENV_CONFIG = {
     "fixed_wavelength": 1.0,
+    # Available observation keys: "time", "avg_position", "avg_velocity", "curvature",
+    # "tangents", "position", "velocity", "director", "relative_position"
     "obs_keys": ["avg_velocity", "curvature", "velocity", "tangents"],
+    # Example with relative_position: ["relative_position", "velocity", "curvature"]
     "period": 1.0,
     "ratio_time": 0.01,
     "rut_ratio": 0.001,
@@ -29,7 +32,7 @@ REWARD_WEIGHTS = {
 
 # Training configuration
 TRAIN_CONFIG = {
-    "total_timesteps": 100_000,  # Change to 50_000 or more for full training
+    "total_timesteps": 50000,  # Change to 50_000 or more for full training
     "print_freq": 100,  # Controls both step-level and episode-level printing frequency
     "step_info_keys": ["forward_speed",
                        "lateral_speed", 
