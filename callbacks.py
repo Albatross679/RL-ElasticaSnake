@@ -284,6 +284,8 @@ class OverwriteCheckpointCallback(BaseCallback):
         verbose: int = 0,
         checkpoint_hooks: Optional[Iterable[Callable[[int], None]]] = None,
         total_timesteps: Optional[int] = None,
+        env_config: Optional[dict] = None,
+        config_save_dir: Optional[str] = None,
     ):
         super().__init__(verbose)
         if save_path is None:
@@ -299,6 +301,8 @@ class OverwriteCheckpointCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.start_timesteps = None  # Will be set in _init_callback
         self._first_seen_timestep = None  # Track first timestep we see for lazy init
+        self.env_config = env_config
+        self.config_save_dir = config_save_dir
 
     def _init_callback(self) -> None:
         os.makedirs(self.save_path, exist_ok=True)
@@ -306,6 +310,13 @@ class OverwriteCheckpointCallback(BaseCallback):
 
     def _save_checkpoint(self) -> None:
         self.model.save(self._checkpoint_file)
+        
+        # Save ENV_CONFIG to JSON file if provided
+        if self.env_config is not None and self.config_save_dir is not None:
+            os.makedirs(self.config_save_dir, exist_ok=True)
+            config_path = os.path.join(self.config_save_dir, f"{self.filename}_config.json")
+            with open(config_path, 'w') as f:
+                json.dump(self.env_config, f, indent=2)
         
         # Ensure start_timesteps is set (lazy initialization)
         if self._first_seen_timestep is None:

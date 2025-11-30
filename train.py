@@ -6,6 +6,7 @@ Run this script to train the PPO agent on the snake environment.
 import os
 import sys
 import numpy as np
+import json
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -40,6 +41,34 @@ def main():
     print("=" * 70)
     print("Starting RL Training for Continuum Snake")
     print("=" * 70)
+    
+    # Determine device (GPU or CPU) - check early
+    import torch
+    # Check if GPU should be used (from config, environment variable, or auto-detect)
+    use_gpu = config.MODEL_CONFIG.get("use_gpu", None)  # Can be True, False, or None (auto-detect)
+    
+    if use_gpu is None:
+        # Auto-detect: use GPU if available and CUDA_VISIBLE_DEVICES is not set to -1
+        if torch.cuda.is_available() and os.environ.get("CUDA_VISIBLE_DEVICES", "") != "-1":
+            device = "cuda"
+        else:
+            device = "cpu"
+    elif use_gpu:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cpu" and use_gpu:
+            print("\n  ⚠ Warning: GPU requested but not available, using CPU")
+    else:
+        device = "cpu"
+    
+    # Print device information prominently at the start
+    print(f"\nDevice Configuration:")
+    print(f"  Using: {device.upper()}")
+    if device == "cuda":
+        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA Version: {torch.version.cuda}")
+        print(f"  PyTorch Version: {torch.__version__}")
+    else:
+        print(f"  CPU mode (GPU not available or disabled)")
     
     # Create directories
     os.makedirs(config.PATHS["log_dir"], exist_ok=True)
@@ -87,29 +116,6 @@ def main():
     # Optional: Check environment (can be slow, comment out for production)
     # print("\nChecking environment...")
     # check_env(env, warn=True)
-    
-    # Determine device (GPU or CPU)
-    import torch
-    # Check if GPU should be used (from config, environment variable, or auto-detect)
-    use_gpu = config.MODEL_CONFIG.get("use_gpu", None)  # Can be True, False, or None (auto-detect)
-    
-    if use_gpu is None:
-        # Auto-detect: use GPU if available and CUDA_VISIBLE_DEVICES is not set to -1
-        if torch.cuda.is_available() and os.environ.get("CUDA_VISIBLE_DEVICES", "") != "-1":
-            device = "cuda"
-        else:
-            device = "cpu"
-    elif use_gpu:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        if device == "cpu" and use_gpu:
-            print("  ⚠ Warning: GPU requested but not available, using CPU")
-    else:
-        device = "cpu"
-    
-    print(f"\nDevice: {device}")
-    if device == "cuda":
-        print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        print(f"  CUDA Version: {torch.version.cuda}")
     
     # Create PPO model
     print("\nCreating PPO model...")
@@ -159,12 +165,16 @@ def main():
         policy_kwargs["features_extractor_kwargs"] = {"features_dim": 64}
         print("  ✓ Layer normalization enabled in policy network")
     
-    # Get gradient clipping value (None means no clipping)
+    # Get gradient clipping value
+    # Note: Stable-Baselines3 PPO always applies gradient clipping, so we need a valid float
+    # If you want to disable clipping, use a very large value (e.g., 1e6)
     max_grad_norm = config.MODEL_CONFIG.get("max_grad_norm", 0.5)
-    if max_grad_norm is not None:
-        print(f"  ✓ Gradient clipping enabled: max_grad_norm={max_grad_norm}")
+    if max_grad_norm is None:
+        # If None is explicitly set, use a very large value to effectively disable clipping
+        max_grad_norm = 1e6
+        print("  Gradient clipping: disabled (using large max_grad_norm=1e6)")
     else:
-        print("  Gradient clipping: disabled")
+        print(f"  ✓ Gradient clipping enabled: max_grad_norm={max_grad_norm}")
     
     model = PPO(
         config.MODEL_CONFIG["policy"],
@@ -198,6 +208,8 @@ def main():
         verbose=1,
         checkpoint_hooks=[reward_callback.checkpoint_hook],
         total_timesteps=config.TRAIN_CONFIG["total_timesteps"],
+        env_config=config.ENV_CONFIG,
+        config_save_dir=config.PATHS["log_dir"],
     )
     
     # Combine callbacks
@@ -219,6 +231,12 @@ def main():
     model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
     model.save(model_path)
     print(f"\nTraining finished! Model saved to {model_path}.zip")
+    
+    # Save ENV_CONFIG to JSON file alongside the model
+    config_path = os.path.join(config.PATHS["log_dir"], f"{config.PATHS['model_name']}_config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config.ENV_CONFIG, f, indent=2)
+    print(f"Environment configuration saved to {config_path}")
     
     # Save VecNormalize statistics if observation normalization is enabled
     if normalize_obs and isinstance(env, VecNormalize):

@@ -10,7 +10,7 @@ policy_gradient_visualizations/
 videos/
 documents/
 visualize/VISUALIZATION_RECOMMENDATIONS.md
-
+full_codebase.txt
 
 # But don't ignore this .gitignore file itself
 !.gitignore

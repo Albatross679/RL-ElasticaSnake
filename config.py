@@ -19,13 +19,13 @@ ENV_CONFIG = {
 # Reward weights configuration
 # Note: Negative values for penalties, positive values for rewards/bonuses
 REWARD_WEIGHTS = {
-    "forward_progress": 5.0 * 1000,
-    "lateral_penalty": -1.0,  # Negative for penalty
+    "forward_progress": 0.0, # 5.0 * 1000,
+    "lateral_penalty": -1.0 * 1000,  # Negative for penalty
     "curvature_range_penalty": -0.1,  # Negative for penalty
-    "curvature_oscillation_reward": 0.08 / ENV_CONFIG["_n_elem"],  # Positive for reward
+    "curvature_oscillation_reward": 0.01 / ENV_CONFIG["_n_elem"],  # Positive for reward
     "energy_penalty": 0.0, #-2.0e4,  # Negative for penalty (set to 0.0 to disable)
     "smoothness_penalty": 0.0, # -5.0e3,  # Negative for penalty
-    "alignment_bonus": 0.5,
+    "alignment_bonus": 0.5 * 0.1,
     "streak_bonus": 100.0,
     "projected_speed": 5.0 * 10,
 }
@@ -89,7 +89,7 @@ MODEL_CONFIG = {
     # Clips gradients if their norm exceeds max_grad_norm to prevent exploding gradients
     # Helps stabilize training, especially with deep networks or unstable environments
     # Common values: 0.5 (conservative), 1.0 (moderate), None (no clipping)
-    "max_grad_norm": 0.5,  # Clip gradients if norm exceeds this value (default: 0.5)
+    "max_grad_norm": None,  # Clip gradients if norm exceeds this value (default: 0.5)
 }
 
 # Paths

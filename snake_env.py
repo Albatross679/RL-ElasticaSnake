@@ -87,9 +87,9 @@ class RewardCalculator:
         # Lateral penalty
         reward_terms["lateral_penalty"] = self._calculate_lateral_penalty(lateral)
         
-        # Curvature range penalty (based on 50-step average)
+        # Curvature range penalty (based on instantaneous curvature)
         reward_terms["curvature_range_penalty"] = self._calculate_curvature_range_penalty(
-            curvature_history
+            curvature_array
         )
         
         # Curvature oscillation reward
@@ -127,35 +127,23 @@ class RewardCalculator:
         return self.reward_weights["lateral_penalty"] * lateral
     
     def _calculate_curvature_range_penalty(
-        self, curvature_history: list[NDArray[np.float64]]
+        self, curvature_array: NDArray[np.float64]
     ) -> float:
         """
-        Calculate curvature range penalty based on CURVATURE_HISTORY_WINDOW-step average.
-        If mean curvature of each element stays within [CURVATURE_MIN, CURVATURE_MAX], do nothing.
-        If mean goes beyond [CURVATURE_MIN, CURVATURE_MAX], penalize proportional to the difference.
+        Calculate curvature range penalty based on instantaneous curvature.
+        If curvature of each element stays within [CURVATURE_MIN, CURVATURE_MAX], do nothing.
+        If curvature goes beyond [CURVATURE_MIN, CURVATURE_MAX], penalize proportional to the difference.
         """
-        if len(curvature_history) == 0:
-            return 0.0
+        # Calculate magnitude for each element: shape (n_elem-1,)
+        curvature_magnitudes = np.linalg.norm(curvature_array, axis=0)
         
-        # Use last CURVATURE_HISTORY_WINDOW steps (or all available if less)
-        history_window = curvature_history[-CURVATURE_HISTORY_WINDOW:] if len(curvature_history) >= CURVATURE_HISTORY_WINDOW else curvature_history
-        
-        # Stack curvature arrays: shape (n_steps, 3, n_elem-1)
-        curvature_stack = np.stack(history_window, axis=0)
-        
-        # Calculate magnitude for each element at each step: shape (n_steps, n_elem-1)
-        curvature_magnitudes = np.linalg.norm(curvature_stack, axis=1)
-        
-        # Calculate mean curvature for each element over the window: shape (n_elem-1,)
-        mean_curvatures = np.mean(curvature_magnitudes, axis=0)
-        
-        # Penalize if mean is outside [CURVATURE_MIN, CURVATURE_MAX]
+        # Penalize if instantaneous curvature is outside [CURVATURE_MIN, CURVATURE_MAX]
         penalty = 0.0
-        for mean_curv in mean_curvatures:
-            if mean_curv < CURVATURE_MIN:
-                penalty += (CURVATURE_MIN - mean_curv)
-            elif mean_curv > CURVATURE_MAX:
-                penalty += (mean_curv - CURVATURE_MAX)
+        for curv_mag in curvature_magnitudes:
+            if curv_mag < CURVATURE_MIN:
+                penalty += (CURVATURE_MIN - curv_mag)
+            elif curv_mag > CURVATURE_MAX:
+                penalty += (curv_mag - CURVATURE_MAX)
         
         return self.reward_weights["curvature_range_penalty"] * penalty
     
@@ -341,9 +329,8 @@ class BaseContinuumSnakeEnv(gym.Env):
 
     def _map_action_to_torque(self, action: NDArray[np.float64]) -> NDArray[np.float64]:
         action_arr = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
-        magnitudes = self._torque_max - self._torque_span * np.abs(action_arr)
-        torques = np.sign(action_arr) * magnitudes
-        torques[np.isclose(action_arr, 0.0)] = 0.0
+        # Linear mapping: 0 -> 0 torque, 1 -> max torque
+        torques = action_arr * self._torque_max
         return torques.astype(np.float64)
 
     def _map_torque_to_action(self, torque: NDArray[np.float64]) -> NDArray[np.float64]:

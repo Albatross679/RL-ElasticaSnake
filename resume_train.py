@@ -6,6 +6,7 @@ Run this script to continue training a previously saved PPO agent.
 import os
 import sys
 import numpy as np
+import json
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -17,18 +18,22 @@ import config
 import time
 
 
-def create_environment():
+def create_environment(env_config=None):
     """Create and configure the environment"""
+    # Use provided env_config or fall back to config.ENV_CONFIG
+    if env_config is None:
+        env_config = config.ENV_CONFIG
+    
     env = FixedWavelengthXZOnlyContinuumSnakeEnv(
-        fixed_wavelength=config.ENV_CONFIG["fixed_wavelength"],
-        obs_keys=config.ENV_CONFIG["obs_keys"],
+        fixed_wavelength=env_config["fixed_wavelength"],
+        obs_keys=env_config["obs_keys"],
     )
     
     # Configure environment parameters
-    env.period = config.ENV_CONFIG["period"]
-    env.ratio_time = config.ENV_CONFIG["ratio_time"]
-    env.rut_ratio = config.ENV_CONFIG["rut_ratio"]
-    env.max_episode_length = config.ENV_CONFIG["max_episode_length"]
+    env.period = env_config["period"]
+    env.ratio_time = env_config["ratio_time"]
+    env.rut_ratio = env_config["rut_ratio"]
+    env.max_episode_length = env_config["max_episode_length"]
     env.reward_weights = config.REWARD_WEIGHTS
     
     return env
@@ -40,6 +45,34 @@ def main():
     print("=" * 70)
     print("Resuming RL Training for Continuum Snake")
     print("=" * 70)
+    
+    # Determine device (GPU or CPU) - check early
+    import torch
+    # Check if GPU should be used (from config, environment variable, or auto-detect)
+    use_gpu = config.MODEL_CONFIG.get("use_gpu", None)  # Can be True, False, or None (auto-detect)
+    
+    if use_gpu is None:
+        # Auto-detect: use GPU if available and CUDA_VISIBLE_DEVICES is not set to -1
+        if torch.cuda.is_available() and os.environ.get("CUDA_VISIBLE_DEVICES", "") != "-1":
+            device = "cuda"
+        else:
+            device = "cpu"
+    elif use_gpu:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cpu" and use_gpu:
+            print("\n  ⚠ Warning: GPU requested but not available, using CPU")
+    else:
+        device = "cpu"
+    
+    # Print device information prominently at the start
+    print(f"\nDevice Configuration:")
+    print(f"  Using: {device.upper()}")
+    if device == "cuda":
+        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA Version: {torch.version.cuda}")
+        print(f"  PyTorch Version: {torch.__version__}")
+    else:
+        print(f"  CPU mode (GPU not available or disabled)")
     
     # Create directories
     os.makedirs(config.PATHS["log_dir"], exist_ok=True)
@@ -77,9 +110,36 @@ def main():
                     print(f"  - {os.path.join(model_dir, model_file)}")
         sys.exit(1)
     
-    # Create environment
+    # Try to load saved configuration file
+    # First, try to find config file based on model name
+    model_basename = os.path.splitext(os.path.basename(model_path))[0]
+    if model_basename.endswith('.zip'):
+        model_basename = os.path.splitext(model_basename)[0]
+    
+    # Try checkpoint config first, then model config
+    config_paths = [
+        os.path.join(config.PATHS["log_dir"], f"{model_basename}_config.json"),
+        os.path.join(config.PATHS["log_dir"], f"{config.PATHS['model_name']}_config.json"),
+    ]
+    
+    saved_env_config = None
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            print(f"\nLoading saved environment configuration from {config_path}...")
+            with open(config_path, 'r') as f:
+                saved_env_config = json.load(f)
+            print("  ✓ Configuration loaded successfully")
+            print(f"  Observation keys: {saved_env_config.get('obs_keys', 'N/A')}")
+            break
+    
+    if saved_env_config is None:
+        print("\n  ⚠ Warning: No saved configuration file found. Using config.ENV_CONFIG.")
+        print("  This may cause issues if the observation space has changed.")
+        saved_env_config = config.ENV_CONFIG
+    
+    # Create environment with saved config
     print("\nCreating environment...")
-    base_env = create_environment()
+    base_env = create_environment(env_config=saved_env_config)
     base_env.reset()
     
     print(f"Action space shape: {base_env.action_space.shape}")
@@ -107,7 +167,8 @@ def main():
             print("    Creating new VecNormalize statistics")
         
         # Wrap in DummyVecEnv (required for VecNormalize)
-        env = DummyVecEnv([create_environment])
+        # Use lambda to capture saved_env_config
+        env = DummyVecEnv([lambda: create_environment(env_config=saved_env_config)])
         # Apply VecNormalize wrapper
         env = VecNormalize(
             env,
@@ -119,11 +180,42 @@ def main():
         
         # Load existing statistics if available
         if has_vec_normalize_file:
-            env = VecNormalize.load(vec_normalize_path, env)
-            print("    ✓ VecNormalize statistics loaded successfully")
+            # Safety check: Validate observation space shape before loading
+            expected_obs_shape = base_env.observation_space.shape
+            print(f"    Expected observation shape: {expected_obs_shape}")
+            
+            # Try to load and validate the VecNormalize stats
+            try:
+                # Load the VecNormalize object to check its observation space
+                import pickle
+                with open(vec_normalize_path, 'rb') as f:
+                    vec_normalize_data = pickle.load(f)
+                
+                # Check if the saved observation space matches
+                if hasattr(vec_normalize_data, 'observation_space'):
+                    saved_obs_shape = vec_normalize_data.observation_space.shape
+                    print(f"    Saved observation shape: {saved_obs_shape}")
+                    
+                    if saved_obs_shape != expected_obs_shape:
+                        print(f"    ⚠ WARNING: Observation shape mismatch!")
+                        print(f"      Expected: {expected_obs_shape}")
+                        print(f"      Saved:    {saved_obs_shape}")
+                        print(f"      This may cause errors when loading VecNormalize statistics.")
+                        print(f"      The saved config has obs_keys: {saved_env_config.get('obs_keys', 'N/A')}")
+                        response = input("      Continue anyway? (y/n): ")
+                        if response.lower() != 'y':
+                            print("      Aborting. Please check your configuration.")
+                            sys.exit(1)
+                
+                # Now load it properly
+                env = VecNormalize.load(vec_normalize_path, env)
+                print("    ✓ VecNormalize statistics loaded successfully")
+            except Exception as e:
+                print(f"    ⚠ ERROR: Failed to load VecNormalize statistics: {e}")
+                print("    Continuing with new VecNormalize statistics...")
     else:
         # Wrap in DummyVecEnv for consistency
-        env = DummyVecEnv([create_environment])
+        env = DummyVecEnv([lambda: create_environment(env_config=saved_env_config)])
     
     # Optional: Check environment (can be slow, comment out for production)
     # print("\nChecking environment...")
@@ -131,7 +223,7 @@ def main():
     
     # Load existing PPO model
     print(f"\nLoading PPO model from {model_path}...")
-    model = PPO.load(model_path, env=env)
+    model = PPO.load(model_path, env=env, device=device)
     
     # Create callbacks
     reward_callback = RewardCallback(
@@ -152,6 +244,8 @@ def main():
         verbose=1,
         checkpoint_hooks=[reward_callback.checkpoint_hook],
         total_timesteps=config.TRAIN_CONFIG["total_timesteps"],
+        env_config=saved_env_config,
+        config_save_dir=config.PATHS["log_dir"],
     )
     
     # Combine callbacks
