@@ -3,6 +3,9 @@ Configuration file for RL training
 """
 
 # Environment configuration
+# Step time calculation: step_time = (ratio_time + 0.001) * period
+# With period=1.0, ratio_time=0.01: step_time = 0.011 seconds per RL step
+# Max steps per episode = max_episode_length / step_time ≈ 20 / 0.011 ≈ 1818 steps
 ENV_CONFIG = {
     "fixed_wavelength": 1.0,
     # Available observation keys: "time", "avg_position", "avg_velocity", "curvature",
@@ -20,19 +23,20 @@ ENV_CONFIG = {
 # Note: Negative values for penalties, positive values for rewards/bonuses
 REWARD_WEIGHTS = {
     "forward_progress": 0.0, # 5.0 * 1000,
-    "lateral_penalty": -1.0 * 1000,  # Negative for penalty
+    "lateral_penalty": 0.0,  # Negative for penalty (perpendicular to current heading)
+    "lateral_speed_penalty": -1.0 * 10,  # Negative for penalty (perpendicular to target direction)
     "curvature_range_penalty": -0.1,  # Negative for penalty
-    "curvature_oscillation_reward": 0.01 / ENV_CONFIG["_n_elem"],  # Positive for reward
+    "curvature_oscillation_reward": 0.0, #0.01 / ENV_CONFIG["_n_elem"],  # Positive for reward
     "energy_penalty": 0.0, #-2.0e4,  # Negative for penalty (set to 0.0 to disable)
     "smoothness_penalty": 0.0, # -5.0e3,  # Negative for penalty
-    "alignment_bonus": 0.5 * 0.1,
-    "streak_bonus": 100.0,
+    "alignment_bonus": 0.0, #0.5 * 0.1,
+    "streak_bonus":0.0, #100.0,
     "projected_speed": 5.0 * 10,
 }
 
 # Training configuration
 TRAIN_CONFIG = {
-    "total_timesteps": 1_000_000,  # Change to 50_000 or more for full training
+    "total_timesteps": 2_000_000,  # Change to 50_000 or more for full training
     "print_freq": 100,  # Controls both step-level and episode-level printing frequency
     "step_info_keys": ["forward_speed",
                        "lateral_speed", 
@@ -62,13 +66,13 @@ MODEL_CONFIG = {
     # GPU configuration
     # Set use_gpu to True to force GPU usage, False to force CPU, or None to auto-detect
     # Auto-detect (None): Uses GPU if available and CUDA_VISIBLE_DEVICES is not set to -1
-    "use_gpu": None,  # None = auto-detect, True = force GPU, False = force CPU
+    "use_gpu": False,  # None = auto-detect, True = force GPU, False = force CPU
     # Policy network architecture options
     # Set use_layer_norm=True to enable layer normalization in the policy network
     # Layer normalization can help with training stability when observations have
     # different scales (e.g., velocities vs curvatures vs positions)
     "use_layer_norm": True,  # Set to True to enable layer normalization
-    "net_arch": None,  # None uses default [64, 64]. Can specify custom: [dict(pi=[128, 128], vf=[128, 128])]
+    "net_arch": [dict(pi=[64, 64], vf=[64, 64])], # None uses default [64, 64]. Can specify custom: [dict(pi=[128, 128], vf=[128, 128])]
     
     # Weight initialization
     # Orthogonal initialization often works better than default for RL
@@ -89,7 +93,7 @@ MODEL_CONFIG = {
     # Clips gradients if their norm exceeds max_grad_norm to prevent exploding gradients
     # Helps stabilize training, especially with deep networks or unstable environments
     # Common values: 0.5 (conservative), 1.0 (moderate), None (no clipping)
-    "max_grad_norm": None,  # Clip gradients if norm exceeds this value (default: 0.5)
+    "max_grad_norm": 0.5,  # Clip gradients if norm exceeds this value (default: 0.5)
 }
 
 # Paths

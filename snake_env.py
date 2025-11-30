@@ -36,6 +36,7 @@ class RewardCalculator:
         "alignment_bonus": 0.5,
         "streak_bonus": 100.0,
         "projected_speed": 2.0,
+        "lateral_speed_penalty": -1.0,  # Penalty for speed perpendicular to target direction
     }
     
     def __init__(self):
@@ -57,6 +58,7 @@ class RewardCalculator:
         required_alignment_steps: int,
         alignment_speed_tol: float,
         velocity_projection: float,
+        lateral_speed_perpendicular: float,
     ) -> tuple[float, dict]:
         """
         Calculate the total reward and individual reward terms.
@@ -75,6 +77,7 @@ class RewardCalculator:
             required_alignment_steps: Required steps for alignment bonus
             alignment_speed_tol: Minimum speed for alignment calculations
             velocity_projection: Projection of velocity onto target direction
+            lateral_speed_perpendicular: Speed component perpendicular to target direction
             
         Returns:
             Tuple of (total_reward, reward_terms_dict)
@@ -114,6 +117,9 @@ class RewardCalculator:
         
         # Projected speed reward
         reward_terms["projected_speed"] = self._calculate_projected_speed(velocity_projection)
+        
+        # Lateral speed penalty (perpendicular to target direction)
+        reward_terms["lateral_speed_penalty"] = self._calculate_lateral_speed_penalty(lateral_speed_perpendicular)
         
         total_reward = sum(reward_terms.values())
         return float(total_reward), reward_terms
@@ -209,6 +215,10 @@ class RewardCalculator:
     def _calculate_projected_speed(self, velocity_projection: float) -> float:
         """Calculate projected speed reward."""
         return self.reward_weights["projected_speed"] * velocity_projection
+    
+    def _calculate_lateral_speed_penalty(self, lateral_speed_perpendicular: float) -> float:
+        """Calculate penalty for lateral speed perpendicular to target direction."""
+        return self.reward_weights["lateral_speed_penalty"] * lateral_speed_perpendicular
 
 
 class BaseContinuumSnakeEnv(gym.Env):
@@ -280,6 +290,7 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.alignment_speed_tol = 1e-4
         self._alignment_streak = 0
         self.velocity_projection = 0.0
+        self.lateral_speed_perpendicular = 0.0  # Speed perpendicular to target direction
         self.reward = 0.0  # Initialize reward attribute
 
         # Initialize reward calculator with default weights
@@ -544,6 +555,7 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.lateral = 0.0
         self.reward = 0.0
         self.velocity_projection = 0.0
+        self.lateral_speed_perpendicular = 0.0
         self._alignment_streak = 0
         self._prev_torque_coeffs = None
         self._curvature_history = []
@@ -645,6 +657,10 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.forward, self.lateral, velocity_vec = self._forward_lateral_from_last_step(sim_time)
         current_com = self.shearable_rod.compute_position_center_of_mass()
         self.velocity_projection = float(np.dot(velocity_vec, self.target_direction))
+        
+        # Calculate lateral speed perpendicular to target direction
+        lateral_velocity = velocity_vec - self.velocity_projection * self.target_direction
+        self.lateral_speed_perpendicular = float(np.linalg.norm(lateral_velocity))
 
         speed = float(np.linalg.norm(velocity_vec))
         alignment = 0.0
@@ -681,6 +697,7 @@ class BaseContinuumSnakeEnv(gym.Env):
             required_alignment_steps=self.required_alignment_steps,
             alignment_speed_tol=self.alignment_speed_tol,
             velocity_projection=self.velocity_projection,
+            lateral_speed_perpendicular=self.lateral_speed_perpendicular,
         )
 
         self.reward = reward
@@ -708,6 +725,7 @@ class BaseContinuumSnakeEnv(gym.Env):
             "reward_terms": reward_terms,
             "forward_speed": float(self.forward),
             "lateral_speed": float(self.lateral),
+            "lateral_speed_perpendicular": float(self.lateral_speed_perpendicular),
             "velocity_projection": float(self.velocity_projection),
             "forward_progress": forward_progress,
             "speed": speed,
@@ -786,16 +804,16 @@ class VariableWavelengthContinuumSnakeEnv(BaseContinuumSnakeEnv):
 class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
     """
     Variant of FixedWavelengthContinuumSnakeEnv that filters out y-components
-    (vertical axis) from all spatial observations. Only x and z components are
-    included in the observation space for position, velocity, avg_position,
-    avg_velocity, curvature, tangents, and director.
+    (vertical axis) from most spatial observations. Only x and z components are
+    included for position, velocity, avg_position, avg_velocity, curvature, 
+    tangents, and relative_position. Director is kept in full 3D.
     """
     
     def _calculate_obs_size(self) -> int:
-        """Calculate observation size with 2D (x,z) instead of 3D for all spatial keys."""
+        """Calculate observation size with 2D (x,z) for most spatial keys, director kept in 3D."""
         n_elem = self._n_elem
         n_nodes = n_elem + 1
-        # All spatial keys are 2D (x,z only): position, velocity, avg_position, avg_velocity, curvature, tangents
+        # Most spatial keys are 2D (x,z only), director is kept in full 3D
         # Director is 3x3 matrices, so we keep 2 rows (x,z) -> 2*3 = 6 per element
         key_sizes = {
             "time": 1,
@@ -805,7 +823,7 @@ class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
             "tangents": n_elem * 2,  # 2D (x,z)
             "position": n_nodes * 2,  # 2D (x,z)
             "velocity": n_nodes * 2,  # 2D (x,z)
-            "director": n_elem * 6,  # 2 rows (x,z) of 3x3 matrix = 6 per element
+            "director": n_elem * 9,  # Full 3x3 matrix = 9 per element (kept in 3D)
             "relative_position": n_nodes * 2,  # 2D (x,z)
         }
         return sum(key_sizes[key] for key in self.obs_keys)
@@ -813,17 +831,18 @@ class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
     def _filter_2d_value(self, key: str, value: NDArray[np.float64]) -> NDArray[np.float64]:
         """
         Filter out y-component (index 1) from observation values for all spatial keys.
+        Director is kept in 3D even in 2D mode.
         """
-        # All spatial keys are filtered to 2D (x,z)
+        # All spatial keys are filtered to 2D (x,z) except director
         if key == "time":
             return value  # Scalar, no filtering needed
         
-        if key in {"avg_position", "avg_velocity"}:
+        if key == "director":
+            # Shape: (3, 3, n_elem) -> keep full 3D -> flatten
+            return value.ravel()
+        elif key in {"avg_position", "avg_velocity"}:
             # Shape: (3,) -> select indices 0,2 (x,z)
             return value[[0, 2]]
-        elif key == "director":
-            # Shape: (3, 3, n_elem) -> select rows 0,2 (x,z) -> (2, 3, n_elem) -> flatten
-            return value[[0, 2], :, :].ravel()
         else:
             # Shape: (3, n) -> select rows 0,2 (x,z) -> flatten
             # Applies to: position, velocity, curvature, tangents, relative_position
