@@ -9,7 +9,7 @@ Training/
 policy_gradient_visualizations/
 videos/
 documents/
-
+visualize/VISUALIZATION_RECOMMENDATIONS.md
 
 
 # But don't ignore this .gitignore file itself

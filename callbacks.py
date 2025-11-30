@@ -48,6 +48,12 @@ class RewardCallback(BaseCallback):
         self.latest_step_entry = None
         self.last_snapshot_timestep = 0
         
+        # Store latest gradient norms (computed after training updates)
+        self.latest_gradient_norms = {
+            "policy": None,
+            "value": None,
+        }
+        
         # Create save directory if provided
         if self.save_dir:
             os.makedirs(self.save_dir, exist_ok=True)
@@ -57,6 +63,7 @@ class RewardCallback(BaseCallback):
     def _init_callback(self) -> None:
         """Initialize callback - capture starting timestep for progress calculation"""
         self.start_timesteps = self.num_timesteps
+        # Model is available through self.model (from BaseCallback)
 
     def _on_step(self) -> bool:
         # Track the first timestep we see for lazy initialization
@@ -133,6 +140,24 @@ class RewardCallback(BaseCallback):
 
         return True
     
+    def _on_rollout_end(self) -> None:
+        """
+        Called after each rollout collection and training update.
+        Compute gradient norms here (right after training) and store them for snapshot recording.
+        """
+        try:
+            if hasattr(self, 'model') and self.model is not None:
+                # Compute gradient norms right after training update
+                policy_norm = self._compute_gradient_norm(self.model.policy, network_type="policy")
+                value_norm = self._compute_gradient_norm(self.model.policy, network_type="value")
+                
+                # Store for later use in snapshots
+                self.latest_gradient_norms["policy"] = policy_norm
+                self.latest_gradient_norms["value"] = value_norm
+        except Exception:
+            # Silently handle errors (gradients might not be available)
+            pass
+    
     def save_training_data(self):
         """Save all training data to a unified dictionary format"""
         if not self.save_dir:
@@ -158,8 +183,65 @@ class RewardCallback(BaseCallback):
         with open(self.training_data_file, 'w') as f:
             json.dump(training_data, f, indent=2)
         
-        if self.verbose > 0:
-            print(f"  -> Training data saved to {self.training_data_file}")
+        # Always print the file path (not just when verbose > 0)
+        print(f"  -> Training data saved to {self.training_data_file}")
+    
+    def _compute_gradient_norm(self, policy, network_type: str = "policy") -> Optional[float]:
+        """
+        Compute gradient norm for the specified network.
+        
+        Args:
+            policy: The policy network
+            network_type: "policy", "value", or "total"
+        
+        Returns:
+            Gradient norm (L2 norm) as a float, or None if gradients not available
+        """
+        try:
+            import torch
+            total_norm = 0.0
+            has_gradients = False
+            
+            if network_type == "policy":
+                # Compute norm for policy network parameters only
+                # Policy network includes: mlp_extractor (shared/pi), action_net
+                for name, param in policy.named_parameters():
+                    if param.grad is not None:
+                        has_gradients = True
+                        # Include action network and policy-specific parts
+                        if "action_net" in name:
+                            param_norm = param.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                        elif "mlp_extractor" in name and ("pi" in name or "shared_net" in name):
+                            param_norm = param.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+            elif network_type == "value":
+                # Compute norm for value network parameters only
+                for name, param in policy.named_parameters():
+                    if param.grad is not None:
+                        has_gradients = True
+                        if "value_net" in name:
+                            param_norm = param.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                        elif "mlp_extractor" in name and "vf" in name:
+                            param_norm = param.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+            else:  # "total"
+                # Compute norm for all parameters
+                for param in policy.parameters():
+                    if param.grad is not None:
+                        has_gradients = True
+                        param_norm = param.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+            
+            if has_gradients:
+                total_norm = total_norm ** (1. / 2)
+                return float(total_norm)
+            else:
+                return None
+        except Exception:
+            # Gradients might not be available (cleared after optimizer step)
+            return None
     
     def record_step_snapshot(self):
         """Capture a snapshot of the latest step info at the configured save frequency."""
@@ -168,13 +250,20 @@ class RewardCallback(BaseCallback):
         snapshot = dict(self.latest_step_entry)
         snapshot["episode"] = self.episode_count
         snapshot["captured_at"] = datetime.now().isoformat()
+        
+        # Add gradient norms if available (computed after training updates)
+        if self.latest_gradient_norms["policy"] is not None:
+            snapshot["gradient_norm_policy"] = self.latest_gradient_norms["policy"]
+        if self.latest_gradient_norms["value"] is not None:
+            snapshot["gradient_norm_value"] = self.latest_gradient_norms["value"]
+        
         self.step_data.append(snapshot)
 
     def _on_training_end(self):
         """Called when training ends - save final data"""
         if self.save_dir:
             self.save_training_data()
-            print(f"\nFinal training data saved to {self.save_dir}")
+            print(f"\nFinal training data saved to {self.training_data_file}")
 
     def checkpoint_hook(self, num_timesteps: int) -> None:
         """Hook executed at checkpoint save time - saves all training data"""
@@ -203,7 +292,9 @@ class OverwriteCheckpointCallback(BaseCallback):
         self.save_path = save_path
         self.filename = filename
         self._last_checkpoint_step = 0
+        # Stable Baselines3 automatically adds .zip extension when saving
         self._checkpoint_file = os.path.join(self.save_path, self.filename)
+        self._checkpoint_file_with_ext = self._checkpoint_file + ".zip"
         self.checkpoint_hooks = list(checkpoint_hooks) if checkpoint_hooks else []
         self.total_timesteps = total_timesteps
         self.start_timesteps = None  # Will be set in _init_callback
@@ -236,8 +327,8 @@ class OverwriteCheckpointCallback(BaseCallback):
         else:
             print(f"\n[Snapshot] Step: {self.num_timesteps:,}")
         
-        if self.verbose > 0:
-            print(f"Checkpoint saved to {self._checkpoint_file}")
+        # Always print the checkpoint file path (SB3 adds .zip automatically)
+        print(f"Checkpoint saved to {self._checkpoint_file_with_ext}")
         
         for hook in self.checkpoint_hooks:
             try:

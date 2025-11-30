@@ -107,6 +107,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
   <div class="chart-full" id="reward-frequency"></div>
 
+  <h2>Learning Progress & Trend Analysis</h2>
+  <div class="chart-grid">
+    <div id="episodes-reward-trend"></div>
+    <div id="reward-variance"></div>
+  </div>
+  <div class="chart-full" id="early-late-comparison"></div>
+
+  <h2>Efficiency Metrics</h2>
+  <div class="chart-grid">
+    <div id="reward-per-timestep"></div>
+    <div id="reward-per-simtime"></div>
+  </div>
+
   <h2>Step-level signals</h2>
   <div class="chart-full" id="step-reward"></div>
   <div class="chart-full" id="step-speed"></div>
@@ -141,6 +154,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const rewardTerms = {reward_terms};
     const curvatureSectionsData = {curvature_sections_data};
     const actionFields = {action_fields};
+    const earlyLateComparisonData = {early_late_comparison_data};
+    const rewardVarianceData = {reward_variance_data};
     const rewardTermLabels = {{
       forward_progress: "Forward progress",
       projected_speed: "Projected speed",
@@ -189,16 +204,38 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       width: 360,
       height: 200,
       data: {{ values: episodesData }},
-      mark: {{ type: "line", color: "#42a5f5" }},
-      encoding: {{
-        x: {{ field: "episode", type: "quantitative" }},
-        y: {{ field: "reward", type: "quantitative" }},
-        tooltip: [
-          {{ field: "episode", type: "quantitative" }},
-          {{ field: "reward", type: "quantitative", format: ".2f" }}
-        ]
-      }},
-      title: "Episode reward"
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#42a5f5", opacity: 0.5 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "reward", type: "quantitative" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "reward", type: "quantitative", format: ".2f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: "reward", as: "reward_ma" }}],
+              frame: [-5, 5],
+              sort: [{{ field: "episode", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#1d4ed8", strokeWidth: 2.5 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "reward_ma", type: "quantitative", title: "Reward" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "reward_ma", type: "quantitative", format: ".2f", title: "Moving Avg (10-ep)" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Episode reward (with 10-episode moving average)"
     }});
 
     embedChart("#episodes-length", {{
@@ -233,6 +270,175 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         ]
       }},
       title: "Cumulative training timesteps"
+    }});
+
+    embedChart("#episodes-reward-trend", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 480,
+      height: 260,
+      data: {{ values: episodesData }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#42a5f5", opacity: 0.4 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "reward", type: "quantitative" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "reward", type: "quantitative", format: ".2f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: "reward", as: "reward_ma" }}],
+              frame: [-5, 5],
+              sort: [{{ field: "episode", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#1d4ed8", strokeWidth: 3 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "reward_ma", type: "quantitative", title: "Reward" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "reward_ma", type: "quantitative", format: ".2f", title: "Moving Avg (10-ep)" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Episode reward trend (10-episode moving average)"
+    }});
+
+    embedChart("#reward-variance", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 480,
+      height: 260,
+      data: {{ values: rewardVarianceData }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#ef5350", strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative", title: "Episode" }},
+            y: {{ field: "variance", type: "quantitative", title: "Variance" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "variance", type: "quantitative", format: ".2f" }},
+              {{ field: "std_dev", type: "quantitative", format: ".2f", title: "Std Dev" }}
+            ]
+          }}
+        }},
+        {{
+          mark: {{ type: "line", color: "#ab47bc", strokeDash: [4,4], strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "std_dev", type: "quantitative", title: "Std Dev" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "std_dev", type: "quantitative", format: ".2f" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Reward variance over time (rolling window = 10 episodes)"
+    }});
+
+    embedChart("#early-late-comparison", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 960,
+      height: 260,
+      data: {{ values: earlyLateComparisonData }},
+      mark: {{ type: "bar" }},
+      encoding: {{
+        x: {{ field: "metric", type: "nominal", title: "Metric" }},
+        y: {{ field: "value", type: "quantitative", title: "Value" }},
+        color: {{ field: "period", type: "nominal", title: "Period" }},
+        tooltip: [
+          {{ field: "period", type: "nominal" }},
+          {{ field: "metric", type: "nominal" }},
+          {{ field: "value", type: "quantitative", format: ".2f" }}
+        ]
+      }},
+      title: "Early vs Late Episodes Comparison (First 25% vs Last 25%)"
+    }});
+
+    embedChart("#reward-per-timestep", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 480,
+      height: 260,
+      data: {{ values: episodesData }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#ffb74d", opacity: 0.5 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "reward_per_timestep", type: "quantitative", title: "Reward per Timestep" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "reward_per_timestep", type: "quantitative", format: ".4f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: "reward_per_timestep", as: "rpt_ma" }}],
+              frame: [-5, 5],
+              sort: [{{ field: "episode", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#f57c00", strokeWidth: 2.5 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "rpt_ma", type: "quantitative" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "rpt_ma", type: "quantitative", format: ".4f", title: "Moving Avg" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Reward per Timestep (10-episode moving average)"
+    }});
+
+    embedChart("#reward-per-simtime", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 480,
+      height: 260,
+      data: {{ values: episodesData }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#66bb6a", opacity: 0.5 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "reward_per_simtime", type: "quantitative", title: "Reward per Simulation Time" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "reward_per_simtime", type: "quantitative", format: ".4f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: "reward_per_simtime", as: "rpst_ma" }}],
+              frame: [-5, 5],
+              sort: [{{ field: "episode", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#2e7d32", strokeWidth: 2.5 }},
+          encoding: {{
+            x: {{ field: "episode", type: "quantitative" }},
+            y: {{ field: "rpst_ma", type: "quantitative" }},
+            tooltip: [
+              {{ field: "episode", type: "quantitative" }},
+              {{ field: "rpst_ma", type: "quantitative", format: ".4f", title: "Moving Avg" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Reward per Simulation Time (10-episode moving average)"
     }});
 
     embedChart("#reward-frequency", {{
@@ -673,16 +879,35 @@ def load_data(path: Path) -> dict:
 
 def prepare_datasets(
     data: dict,
-) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict], List[str]]:
-    episodes = [
-        {
+) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict], List[str], List[Dict], List[Dict]]:
+    # Calculate total sim_time per episode from steps data (use max sim_time as episode length)
+    episode_sim_times = {}
+    for step in data["steps"]:
+        ep = step["episode"]
+        if ep not in episode_sim_times:
+            episode_sim_times[ep] = []
+        episode_sim_times[ep].append(step["sim_time"])
+    
+    # Calculate total sim_time per episode (max sim_time in episode)
+    total_sim_time_per_ep = {}
+    for ep, sim_times in episode_sim_times.items():
+        total_sim_time_per_ep[ep] = max(sim_times) if sim_times else 0.0
+    
+    episodes = []
+    for idx, reward in enumerate(data["episodes"]["rewards"]):
+        length = data["episodes"]["lengths"][idx]
+        reward_per_timestep = reward / length if length > 0 else 0.0
+        total_sim_time = total_sim_time_per_ep.get(idx, 0.0)
+        reward_per_simtime = reward / total_sim_time if total_sim_time > 0 else 0.0
+        
+        episodes.append({
             "episode": idx,
             "reward": reward,
-            "length": data["episodes"]["lengths"][idx],
+            "length": length,
             "timesteps": data["episodes"]["timesteps_at_episode"][idx],
-        }
-        for idx, reward in enumerate(data["episodes"]["rewards"])
-    ]
+            "reward_per_timestep": reward_per_timestep,
+            "reward_per_simtime": reward_per_simtime,
+        })
 
     steps_data: List[Dict] = []
     curvature_sections: List[Dict] = []
@@ -732,7 +957,46 @@ def prepare_datasets(
             mean_records.append({"band": f"band_{band_idx}", "segment": f"seg_{seg_idx}", "value": mean_val})
             std_records.append({"band": f"band_{band_idx}", "segment": f"seg_{seg_idx}", "std": std_val})
 
-    return episodes, steps_data, mean_records, std_records, curvature_sections, action_fields
+    # Calculate early vs late episode statistics
+    num_episodes = len(episodes)
+    split_point = max(1, num_episodes // 4)  # First 25% vs Last 25%
+    
+    early_episodes = episodes[:split_point]
+    late_episodes = episodes[-split_point:] if num_episodes > split_point * 2 else []
+    
+    early_late_comparison = []
+    if early_episodes and late_episodes:
+        # Calculate mean reward for early vs late
+        early_mean_reward = sum(ep["reward"] for ep in early_episodes) / len(early_episodes)
+        late_mean_reward = sum(ep["reward"] for ep in late_episodes) / len(late_episodes)
+        early_mean_reward_per_timestep = sum(ep["reward_per_timestep"] for ep in early_episodes) / len(early_episodes)
+        late_mean_reward_per_timestep = sum(ep["reward_per_timestep"] for ep in late_episodes) / len(late_episodes)
+        
+        early_late_comparison = [
+            {"period": "Early (First 25%)", "metric": "Mean Reward", "value": early_mean_reward},
+            {"period": "Late (Last 25%)", "metric": "Mean Reward", "value": late_mean_reward},
+            {"period": "Early (First 25%)", "metric": "Reward per Timestep", "value": early_mean_reward_per_timestep},
+            {"period": "Late (Last 25%)", "metric": "Reward per Timestep", "value": late_mean_reward_per_timestep},
+        ]
+    
+    # Calculate reward variance over time (rolling variance of episode rewards)
+    reward_variance_data = []
+    window_size = 10
+    for i in range(num_episodes):
+        start_idx = max(0, i - window_size + 1)
+        window_episodes = episodes[start_idx:i+1]
+        if len(window_episodes) >= 2:
+            window_rewards = [ep["reward"] for ep in window_episodes]
+            mean_reward = sum(window_rewards) / len(window_rewards)
+            variance = sum((r - mean_reward) ** 2 for r in window_rewards) / len(window_rewards)
+            std_dev = math.sqrt(variance)
+            reward_variance_data.append({
+                "episode": i,
+                "variance": variance,
+                "std_dev": std_dev,
+            })
+
+    return episodes, steps_data, mean_records, std_records, curvature_sections, action_fields, early_late_comparison, reward_variance_data
 
 
 def compute_curvature_stats(steps: List[dict]) -> Tuple[List[List[float]], List[List[float]]]:
@@ -769,6 +1033,8 @@ def render_html(
     curvature_std: List[Dict],
     curvature_sections: List[Dict],
     action_fields: List[str],
+    early_late_comparison: List[Dict],
+    reward_variance: List[Dict],
 ) -> str:
     return HTML_TEMPLATE.format(
         saved_at=metadata["saved_at"],
@@ -781,6 +1047,8 @@ def render_html(
         reward_terms=json.dumps(REWARD_TERMS),
         curvature_sections_data=json.dumps(curvature_sections),
         action_fields=json.dumps(action_fields),
+        early_late_comparison_data=json.dumps(early_late_comparison),
+        reward_variance_data=json.dumps(reward_variance),
     )
 
 
@@ -811,6 +1079,8 @@ def main() -> None:
         std_records,
         curvature_sections,
         action_fields,
+        early_late_comparison,
+        reward_variance,
     ) = prepare_datasets(data)
     html = render_html(
         data["metadata"],
@@ -820,6 +1090,8 @@ def main() -> None:
         std_records,
         curvature_sections,
         action_fields,
+        early_late_comparison,
+        reward_variance,
     )
     OUTPUT_PATH.write_text(html)
     print(f"Wrote {OUTPUT_PATH}")

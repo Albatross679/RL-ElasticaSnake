@@ -8,6 +8,7 @@ import sys
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from snake_env import FixedWavelengthXZOnlyContinuumSnakeEnv
 from callbacks import RewardCallback, OverwriteCheckpointCallback
@@ -78,13 +79,51 @@ def main():
     
     # Create environment
     print("\nCreating environment...")
-    env = create_environment()
-    env.reset()
+    base_env = create_environment()
+    base_env.reset()
     
-    print(f"Action space shape: {env.action_space.shape}")
-    print(f"Fixed wavelength: {env.fixed_wavelength}")
-    print(f"Observation space shape: {env.observation_space.shape}")
-    print(f"Observation keys: {env.obs_keys}")
+    print(f"Action space shape: {base_env.action_space.shape}")
+    print(f"Fixed wavelength: {base_env.fixed_wavelength}")
+    print(f"Observation space shape: {base_env.observation_space.shape}")
+    print(f"Observation keys: {base_env.obs_keys}")
+    print(f"\nReward weights (from config):")
+    for key, value in base_env.reward_weights.items():
+        print(f"  {key}: {value}")
+    
+    # Check if VecNormalize statistics file exists (for observation normalization)
+    vec_normalize_path = model_path.replace('.zip', '_vec_normalize.pkl')
+    if not vec_normalize_path.endswith('.pkl'):
+        vec_normalize_path = model_path + '_vec_normalize.pkl'
+    
+    normalize_obs = config.MODEL_CONFIG.get("normalize_observations", False)
+    has_vec_normalize_file = os.path.exists(vec_normalize_path)
+    
+    # Apply observation normalization if enabled or if stats file exists
+    if normalize_obs or has_vec_normalize_file:
+        print("\n  ✓ Observation normalization enabled (VecNormalize)")
+        if has_vec_normalize_file:
+            print(f"    Loading VecNormalize statistics from {vec_normalize_path}")
+        else:
+            print("    Creating new VecNormalize statistics")
+        
+        # Wrap in DummyVecEnv (required for VecNormalize)
+        env = DummyVecEnv([create_environment])
+        # Apply VecNormalize wrapper
+        env = VecNormalize(
+            env,
+            training=config.MODEL_CONFIG.get("normalize_observations_training", True),
+            norm_obs=True,
+            norm_reward=False,
+            clip_obs=config.MODEL_CONFIG.get("clip_obs", 10.0),
+        )
+        
+        # Load existing statistics if available
+        if has_vec_normalize_file:
+            env = VecNormalize.load(vec_normalize_path, env)
+            print("    ✓ VecNormalize statistics loaded successfully")
+    else:
+        # Wrap in DummyVecEnv for consistency
+        env = DummyVecEnv([create_environment])
     
     # Optional: Check environment (can be slow, comment out for production)
     # print("\nChecking environment...")
@@ -131,10 +170,16 @@ def main():
     except KeyboardInterrupt:
         print("\nTraining interrupted by user. Saving model...")
     
-    # Save model
-    model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
-    model.save(model_path)
-    print(f"\nTraining finished! Model saved to {model_path}")
+    # Save model (SB3 automatically adds .zip extension)
+    save_model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
+    model.save(save_model_path)
+    print(f"\nTraining finished! Model saved to {save_model_path}.zip")
+    
+    # Save VecNormalize statistics if observation normalization is enabled
+    if (normalize_obs or has_vec_normalize_file) and isinstance(env, VecNormalize):
+        vec_normalize_save_path = os.path.join(config.PATHS["model_dir"], f"{config.PATHS['model_name']}_vec_normalize.pkl")
+        env.save(vec_normalize_save_path)
+        print(f"VecNormalize statistics saved to {vec_normalize_save_path}")
     
     # Close environment
     env.close()

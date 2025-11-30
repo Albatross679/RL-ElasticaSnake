@@ -8,6 +8,7 @@ import sys
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from snake_env import FixedWavelengthXZOnlyContinuumSnakeEnv
 from callbacks import RewardCallback, OverwriteCheckpointCallback
@@ -46,23 +47,80 @@ def main():
     
     # Create environment
     print("\nCreating environment...")
-    env = create_environment()
-    env.reset()
+    base_env = create_environment()
+    base_env.reset()
     
-    print(f"Action space shape: {env.action_space.shape}")
-    print(f"Fixed wavelength: {env.fixed_wavelength}")
-    print(f"Observation space shape: {env.observation_space.shape}")
-    print(f"Observation keys: {env.obs_keys}")
+    print(f"Action space shape: {base_env.action_space.shape}")
+    print(f"Fixed wavelength: {base_env.fixed_wavelength}")
+    print(f"Observation space shape: {base_env.observation_space.shape}")
+    print(f"Observation keys: {base_env.obs_keys}")
+    print(f"\nReward weights (from config):")
+    for key, value in base_env.reward_weights.items():
+        print(f"  {key}: {value}")
+    
+    # Apply observation normalization (VecNormalize) if enabled
+    # This is HIGHLY RECOMMENDED for unbounded observation spaces!
+    # Note: VecNormalize uses STANDARDIZATION (mean=0, std=1), NOT min-max scaling to [0,1]
+    # After standardization, values can still be large (e.g., 5, 10, or more standard deviations)
+    # Clipping prevents extreme outliers from destabilizing training
+    normalize_obs = config.MODEL_CONFIG.get("normalize_observations", False)
+    if normalize_obs:
+        print("\n  ✓ Observation normalization enabled (VecNormalize)")
+        print("    Standardizing observations to mean=0, std=1 using running statistics")
+        print("    Note: Standardized values are NOT bounded to [0,1] - they can be large!")
+        print("    Clipping to [-10, 10] to handle outliers (most values will be within [-3, 3])")
+        # Wrap in DummyVecEnv (required for VecNormalize)
+        env = DummyVecEnv([create_environment])
+        # Apply VecNormalize wrapper
+        clip_value = config.MODEL_CONFIG.get("clip_obs", 10.0)
+        env = VecNormalize(
+            env,
+            training=config.MODEL_CONFIG.get("normalize_observations_training", True),
+            norm_obs=True,  # Standardize observations (mean=0, std=1)
+            norm_reward=False,  # Don't normalize rewards (you have custom reward structure)
+            clip_obs=clip_value,  # Clip standardized observations to [-clip_value, clip_value]
+        )
+    else:
+        # Wrap in DummyVecEnv for consistency (PPO works with vectorized environments)
+        env = DummyVecEnv([create_environment])
     
     # Optional: Check environment (can be slow, comment out for production)
     # print("\nChecking environment...")
     # check_env(env, warn=True)
+    
+    # Determine device (GPU or CPU)
+    import torch
+    # Check if GPU should be used (from config, environment variable, or auto-detect)
+    use_gpu = config.MODEL_CONFIG.get("use_gpu", None)  # Can be True, False, or None (auto-detect)
+    
+    if use_gpu is None:
+        # Auto-detect: use GPU if available and CUDA_VISIBLE_DEVICES is not set to -1
+        if torch.cuda.is_available() and os.environ.get("CUDA_VISIBLE_DEVICES", "") != "-1":
+            device = "cuda"
+        else:
+            device = "cpu"
+    elif use_gpu:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cpu" and use_gpu:
+            print("  ⚠ Warning: GPU requested but not available, using CPU")
+    else:
+        device = "cpu"
+    
+    print(f"\nDevice: {device}")
+    if device == "cuda":
+        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA Version: {torch.version.cuda}")
     
     # Create PPO model
     print("\nCreating PPO model...")
     
     # Configure policy kwargs (for layer normalization, custom network architecture, etc.)
     policy_kwargs = {}
+    
+    # Orthogonal initialization (often better for RL than default)
+    if config.MODEL_CONFIG.get("use_orthogonal_init", False):
+        policy_kwargs["ortho_init"] = True
+        print("  ✓ Orthogonal weight initialization enabled")
     
     # Custom network architecture if specified
     if config.MODEL_CONFIG.get("net_arch") is not None:
@@ -101,14 +159,23 @@ def main():
         policy_kwargs["features_extractor_kwargs"] = {"features_dim": 64}
         print("  ✓ Layer normalization enabled in policy network")
     
+    # Get gradient clipping value (None means no clipping)
+    max_grad_norm = config.MODEL_CONFIG.get("max_grad_norm", 0.5)
+    if max_grad_norm is not None:
+        print(f"  ✓ Gradient clipping enabled: max_grad_norm={max_grad_norm}")
+    else:
+        print("  Gradient clipping: disabled")
+    
     model = PPO(
         config.MODEL_CONFIG["policy"],
         env,
         gamma=config.MODEL_CONFIG["gamma"],      # <--- The Discount Factor
         gae_lambda=config.MODEL_CONFIG["gae_lambda"], # <--- The GAE Parameter
         n_steps=config.MODEL_CONFIG["n_steps"],    # <--- The Rollout Buffer Size
+        max_grad_norm=max_grad_norm,  # Gradient clipping to prevent exploding gradients
         verbose=config.MODEL_CONFIG["verbose"],
         policy_kwargs=policy_kwargs if policy_kwargs else None,
+        device=device,  # Explicitly set device (cuda or cpu)
         # tensorboard_log=config.PATHS["log_dir"]  # Uncomment for tensorboard logging
     )
     
@@ -148,10 +215,17 @@ def main():
     except KeyboardInterrupt:
         print("\nTraining interrupted by user. Saving model...")
     
-    # Save model
+    # Save model (SB3 automatically adds .zip extension)
     model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
     model.save(model_path)
-    print(f"\nTraining finished! Model saved to {model_path}")
+    print(f"\nTraining finished! Model saved to {model_path}.zip")
+    
+    # Save VecNormalize statistics if observation normalization is enabled
+    if normalize_obs and isinstance(env, VecNormalize):
+        vec_normalize_path = os.path.join(config.PATHS["model_dir"], f"{config.PATHS['model_name']}_vec_normalize.pkl")
+        env.save(vec_normalize_path)
+        print(f"VecNormalize statistics saved to {vec_normalize_path}")
+        print("  (Load this when testing/evaluating the model to use the same normalization)")
     
     # Close environment
     env.close()

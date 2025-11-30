@@ -7,13 +7,13 @@ ENV_CONFIG = {
     "fixed_wavelength": 1.0,
     # Available observation keys: "time", "avg_position", "avg_velocity", "curvature",
     # "tangents", "position", "velocity", "director", "relative_position"
-    "obs_keys": ["avg_velocity", "curvature", "velocity", "tangents"],
-    # Example with relative_position: ["relative_position", "velocity", "curvature"]
+    "obs_keys": ["avg_velocity", "curvature", "velocity", "tangents", "relative_position"],
+    # Example with relative_position: ["velocity", "curvature"]
     "period": 1.0,
     "ratio_time": 0.01,
     "rut_ratio": 0.001,
     "_n_elem": 10,
-    "max_episode_length": 30,  # Maximum simulation time (seconds) before episode termination
+    "max_episode_length": 20,  # Maximum simulation time (seconds) before episode termination
 }
 
 # Reward weights configuration
@@ -40,7 +40,7 @@ TRAIN_CONFIG = {
                        "action",  # Record per-step action vectors in snapshots
                        "curvatures",  # Saved but not printed (see print_exclude_keys)
                        "reward_terms",  # Saved but not printed (see print_exclude_keys)
-                    #    "forward_progress",
+                       "forward_progress",
                     #    "speed", 
                     #    "alignment",
                     #    "alignment_streak",
@@ -59,12 +59,37 @@ MODEL_CONFIG = {
     "gamma": 0.99,
     "policy": "MlpPolicy",
     "verbose": 1,
+    # GPU configuration
+    # Set use_gpu to True to force GPU usage, False to force CPU, or None to auto-detect
+    # Auto-detect (None): Uses GPU if available and CUDA_VISIBLE_DEVICES is not set to -1
+    "use_gpu": None,  # None = auto-detect, True = force GPU, False = force CPU
     # Policy network architecture options
     # Set use_layer_norm=True to enable layer normalization in the policy network
     # Layer normalization can help with training stability when observations have
     # different scales (e.g., velocities vs curvatures vs positions)
     "use_layer_norm": True,  # Set to True to enable layer normalization
     "net_arch": None,  # None uses default [64, 64]. Can specify custom: [dict(pi=[128, 128], vf=[128, 128])]
+    
+    # Weight initialization
+    # Orthogonal initialization often works better than default for RL
+    # Initializes weights as orthogonal matrices, which helps with gradient flow
+    # and training stability, especially in deep networks
+    "use_orthogonal_init": True,  # Use orthogonal weight initialization (recommended for RL)
+    
+    # Observation normalization (VecNormalize)
+    # HIGHLY RECOMMENDED for unbounded observation spaces!
+    # VecNormalize uses STANDARDIZATION (mean=0, std=1), NOT min-max scaling to [0,1]
+    # After standardization, values can still be large (e.g., 5-10 standard deviations)
+    # Clipping prevents extreme outliers from destabilizing training
+    "normalize_observations": True,  # Enable observation standardization
+    "normalize_observations_training": True,  # Update normalization stats during training
+    "clip_obs": 10.0,  # Clip standardized observations to [-clip_obs, clip_obs] (default: 10.0)
+    
+    # Gradient clipping
+    # Clips gradients if their norm exceeds max_grad_norm to prevent exploding gradients
+    # Helps stabilize training, especially with deep networks or unstable environments
+    # Common values: 0.5 (conservative), 1.0 (moderate), None (no clipping)
+    "max_grad_norm": 0.5,  # Clip gradients if norm exceeds this value (default: 0.5)
 }
 
 # Paths
