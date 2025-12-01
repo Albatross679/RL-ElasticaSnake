@@ -192,8 +192,8 @@ def main():
     # Create callbacks
     reward_callback = RewardCallback(
         print_freq=config.TRAIN_CONFIG["print_freq"],
-        step_info_keys=config.TRAIN_CONFIG["step_info_keys"],
-        print_exclude_keys=config.TRAIN_CONFIG.get("print_exclude_keys", []),
+        save_keys=config.TRAIN_CONFIG["save_keys"],
+        print_keys=config.TRAIN_CONFIG.get("print_keys", []),
         save_dir=config.PATHS["log_dir"],  # Save training data to log directory
         save_freq=config.TRAIN_CONFIG.get("save_freq", 100),  # Save every N episodes
         save_steps=config.TRAIN_CONFIG.get("save_steps", True),  # Whether to save step-level data
@@ -201,6 +201,13 @@ def main():
     )
     
     # Add checkpoint callback to save model periodically (every 10k timesteps)
+    full_config = {
+        "ENV_CONFIG": config.ENV_CONFIG,
+        "REWARD_WEIGHTS": config.REWARD_WEIGHTS,
+        "TRAIN_CONFIG": config.TRAIN_CONFIG,
+        "MODEL_CONFIG": config.MODEL_CONFIG,
+        "PATHS": config.PATHS,
+    }
     checkpoint_callback = OverwriteCheckpointCallback(
         checkpoint_freq=config.TRAIN_CONFIG.get("checkpoint_freq", 10_000),
         save_path=config.PATHS["model_dir"],
@@ -208,8 +215,9 @@ def main():
         verbose=1,
         checkpoint_hooks=[reward_callback.checkpoint_hook],
         total_timesteps=config.TRAIN_CONFIG["total_timesteps"],
-        env_config=config.ENV_CONFIG,
+        env_config=config.ENV_CONFIG,  # Keep for backward compatibility
         config_save_dir=config.PATHS["log_dir"],
+        full_config=full_config,  # Pass full configuration
     )
     
     # Combine callbacks
@@ -232,11 +240,18 @@ def main():
     model.save(model_path)
     print(f"\nTraining finished! Model saved to {model_path}.zip")
     
-    # Save ENV_CONFIG to JSON file alongside the model
+    # Save complete configuration to JSON file alongside the model
     config_path = os.path.join(config.PATHS["log_dir"], f"{config.PATHS['model_name']}_config.json")
+    full_config = {
+        "ENV_CONFIG": config.ENV_CONFIG,
+        "REWARD_WEIGHTS": config.REWARD_WEIGHTS,
+        "TRAIN_CONFIG": config.TRAIN_CONFIG,
+        "MODEL_CONFIG": config.MODEL_CONFIG,
+        "PATHS": config.PATHS,
+    }
     with open(config_path, 'w') as f:
-        json.dump(config.ENV_CONFIG, f, indent=2)
-    print(f"Environment configuration saved to {config_path}")
+        json.dump(full_config, f, indent=2)
+    print(f"Complete training configuration saved to {config_path}")
     
     # Save VecNormalize statistics if observation normalization is enabled
     if normalize_obs and isinstance(env, VecNormalize):

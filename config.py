@@ -23,8 +23,8 @@ ENV_CONFIG = {
 # Note: Negative values for penalties, positive values for rewards/bonuses
 REWARD_WEIGHTS = {
     "forward_progress": 0.0, # 5.0 * 1000,
-    "lateral_penalty": 0.0,  # Negative for penalty (perpendicular to current heading)
-    "lateral_speed_penalty": -1.0 * 10,  # Negative for penalty (perpendicular to target direction)
+    "speed_perpendicular_to_heading_penalty": 0.0,  # Negative for penalty (perpendicular to snake's heading direction)
+    "speed_perpendicular_to_target_penalty": -1.0 * 10,  # Negative for penalty (perpendicular to target direction)
     "curvature_range_penalty": -0.1,  # Negative for penalty
     "curvature_oscillation_reward": 0.0, #0.01 / ENV_CONFIG["_n_elem"],  # Positive for reward
     "energy_penalty": 0.0, #-2.0e4,  # Negative for penalty (set to 0.0 to disable)
@@ -34,23 +34,62 @@ REWARD_WEIGHTS = {
     "projected_speed": 5.0 * 10,
 }
 
+# info = {
+#     "reward": float(reward),
+#     "reward_terms": reward_terms,
+#     "speed_along_heading": float(self.speed_along_heading),
+#     "speed_perpendicular_to_heading": float(self.speed_perpendicular_to_heading),
+#     "lateral_speed_perpendicular": float(self.lateral_speed_perpendicular),
+#     "velocity_projection": float(self.velocity_projection),
+#     "forward_progress": forward_progress,
+#     "speed": speed,
+#     "alignment": alignment,
+#     "alignment_streak": int(self._alignment_streak),
+#     "alignment_goal_met": bool(terminated_due_to_alignment),
+#     "position": current_com.astype(float),
+#     "heading_dir": self._dir.astype(float),
+#     "current_time": float(self.current_time),
+#     "curvatures": curvature_array.astype(float).tolist(),  # For JSON serialization
+#     "action": action.astype(float).tolist(),  # Raw action for logging
+# }
+
+
 # Training configuration
 TRAIN_CONFIG = {
-    "total_timesteps": 2_000_000,  # Change to 50_000 or more for full training
+    "total_timesteps": 11_000,  # Change to 50_000 or more for full training
     "print_freq": 100,  # Controls both step-level and episode-level printing frequency
-    "step_info_keys": ["forward_speed",
-                       "lateral_speed", 
-                       "velocity_projection",
-                       "action",  # Record per-step action vectors in snapshots
-                       "curvatures",  # Saved but not printed (see print_exclude_keys)
-                       "reward_terms",  # Saved but not printed (see print_exclude_keys)
-                       "forward_progress",
-                    #    "speed", 
-                    #    "alignment",
-                    #    "alignment_streak",
-                    #    "alignment_goal_met"
-                       ],
-    "print_exclude_keys": ["action", "curvatures", "reward_terms"],  # Keys to save but exclude from printing
+    
+    # Keys to save to training_data.json (step-level snapshots)
+    # Only keys listed here will be saved to the JSON file
+    # Note: "reward" and "sim_time" are always saved automatically
+    "save_keys": [
+        # Raw environment metrics (distance, speed, alignment, etc.)
+        "current_time",
+        "speed_perpendicular_to_target",  # Raw lateral speed (not weighted)
+        "velocity_projection",              # Raw velocity projection (not weighted)
+        "forward_progress",                 # Raw forward progress distance (not weighted)
+        "alignment",                        # Raw alignment value (cosine similarity)
+        "alignment_streak",                 # Current alignment streak count
+        "alignment_goal_met",               # Boolean: whether alignment goal was met
+        "reward",
+        # Reward terms (weighted values that contribute to total reward)
+        "reward_terms",                     # Dictionary of all individual reward terms (weight * raw_value)
+    ],
+    
+    # Keys to print to console during training (must also be in save_keys to be printed)
+    # Only keys listed here will be printed to console output
+    # Use this to control console verbosity - large/complex data (dicts, arrays) are typically excluded
+    "print_keys": [
+        "speed_perpendicular_to_target",
+        "velocity_projection",
+        "forward_progress",
+        "current_time",
+        "reward",
+        # "alignment",
+        # "alignment_streak",
+        # "alignment_goal_met",
+        # Note: "reward_terms" is NOT in print_keys (too verbose - saved but not printed)
+    ],
     "save_freq": 100,  # Save every N timesteps for training snapshots
     "save_steps": True,  # Whether to save step-level data
     "checkpoint_freq": 10_000,  # Timesteps between checkpoint saves

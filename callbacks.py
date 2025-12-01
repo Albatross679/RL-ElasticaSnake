@@ -20,8 +20,8 @@ class RewardCallback(BaseCallback):
         self,
         verbose: int = 0,
         print_freq: int = 5,
-        step_info_keys: Optional[list[str]] = None,
-        print_exclude_keys: Optional[list[str]] = None,
+        save_keys: Optional[list[str]] = None,
+        print_keys: Optional[list[str]] = None,
         save_dir: Optional[str] = None,
         save_freq: int = 100,  # Save every N episodes
         save_steps: bool = True,  # Whether to save step-level data
@@ -29,8 +29,8 @@ class RewardCallback(BaseCallback):
     ):
         super(RewardCallback, self).__init__(verbose)
         self.print_freq = print_freq  # Controls both step and episode printing frequency
-        self.step_info_keys = step_info_keys or []
-        self.print_exclude_keys = set(print_exclude_keys or [])  # Keys to exclude from printing
+        self.save_keys = save_keys or []  # Keys to save to JSON file
+        self.print_keys = set(print_keys or [])  # Keys to print to console
         self.save_dir = save_dir
         self.save_freq = save_freq
         self.save_steps = save_steps
@@ -41,7 +41,9 @@ class RewardCallback(BaseCallback):
         self.episode_rewards = []
         self.episode_lengths = []
         self.episode_count = 0
+        self.current_episode = 0  # Track current episode number (incremented when episode completes)
         self.timesteps_at_episode = []  # Track timesteps when each episode ended
+        self.last_sim_time = None  # Track last sim_time to detect episode resets
         
         # Unified step data storage: list of dicts snapshotting info every save_freq episodes
         self.step_data = []  # Each entry captured at save_freq timesteps
@@ -83,10 +85,25 @@ class RewardCallback(BaseCallback):
         infos = self.locals.get('infos', [{}])
         info_dict = infos[0] if infos and isinstance(infos[0], dict) else {}
 
+        # Track if we detected an episode boundary this step (via sim_time reset)
+        episode_boundary_detected = False
+        
         # Handle step-level rewards and printing
         if rewards:
             step_reward = float(np.mean(rewards))
             sim_time = info_dict.get('current_time')
+            
+            # Detect episode boundaries by sim_time reset (fallback if episode info not available)
+            if sim_time is not None and self.last_sim_time is not None:
+                # If sim_time decreased significantly (reset), likely a new episode started
+                if sim_time < self.last_sim_time - 0.5:  # Threshold to avoid false positives from small fluctuations
+                    # Episode boundary detected via sim_time reset
+                    episode_boundary_detected = True
+                    # Increment current episode number (we're now in a new episode)
+                    # Note: current_episode starts at 0 (first episode), so when we detect the first
+                    # boundary, we're starting episode 1, hence we increment
+                    self.current_episode += 1
+            self.last_sim_time = sim_time
             
             # Track latest step data (used when we snapshot every save_freq episodes)
             step_entry = {
@@ -94,7 +111,7 @@ class RewardCallback(BaseCallback):
                 "reward": step_reward,
                 "sim_time": sim_time if sim_time is not None else None,
             }
-            for key in self.step_info_keys:
+            for key in self.save_keys:
                 if key in info_dict:
                     step_entry[key] = info_dict[key]
             self.latest_step_entry = step_entry
@@ -115,14 +132,14 @@ class RewardCallback(BaseCallback):
                 self.last_snapshot_timestep = self.num_timesteps
 
             if self.num_timesteps % self.print_freq == 0:
-                # Filter out excluded keys from printing
-                keys_to_print = [k for k in self.step_info_keys if k in info_dict and k not in self.print_exclude_keys]
+                # Only print keys that are in both save_keys and print_keys
+                keys_to_print = [k for k in self.print_keys if k in info_dict and k in self.save_keys]
                 info_bits = [f"{k}={info_dict[k]}" for k in keys_to_print]
                 info_str = f" | {'; '.join(info_bits)}" if info_bits else ""
                 sim_time_str = f" | sim_time={sim_time:.6f}" if sim_time is not None else ""
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Step {self.num_timesteps}] reward={step_reward:.6f}{sim_time_str}{info_str}")
 
-        # Handle episode completion
+        # Handle episode completion (primary method via stable-baselines3 episode info)
         episode_info = info_dict.get('episode')
         if episode_info:
             episode_reward = episode_info.get('r', 0)
@@ -131,6 +148,10 @@ class RewardCallback(BaseCallback):
             self.episode_lengths.append(episode_length)
             self.timesteps_at_episode.append(self.num_timesteps)
             self.episode_count += 1
+            # Increment current episode number for next episode
+            # Only increment if we haven't already detected this boundary via sim_time reset
+            if not episode_boundary_detected:
+                self.current_episode += 1
 
             print(f"\n[Episode {self.episode_count}] Reward = {episode_reward:.4f}, Length = {episode_length} steps")
 
@@ -169,7 +190,8 @@ class RewardCallback(BaseCallback):
                 "saved_at": datetime.now().isoformat(),
                 "total_timesteps": self.num_timesteps,
                 "episode_count": self.episode_count,
-                "step_info_keys": self.step_info_keys,
+                "save_keys": self.save_keys,
+                "print_keys": list(self.print_keys),
             },
             "episodes": {
                 "rewards": self.episode_rewards,
@@ -248,7 +270,7 @@ class RewardCallback(BaseCallback):
         if not self.save_steps or not self.latest_step_entry:
             return
         snapshot = dict(self.latest_step_entry)
-        snapshot["episode"] = self.episode_count
+        snapshot["episode"] = self.current_episode  # Use current episode number, not count of completed episodes
         snapshot["captured_at"] = datetime.now().isoformat()
         
         # Add gradient norms if available (computed after training updates)
@@ -286,6 +308,7 @@ class OverwriteCheckpointCallback(BaseCallback):
         total_timesteps: Optional[int] = None,
         env_config: Optional[dict] = None,
         config_save_dir: Optional[str] = None,
+        full_config: Optional[dict] = None,
     ):
         super().__init__(verbose)
         if save_path is None:
@@ -301,7 +324,8 @@ class OverwriteCheckpointCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.start_timesteps = None  # Will be set in _init_callback
         self._first_seen_timestep = None  # Track first timestep we see for lazy init
-        self.env_config = env_config
+        self.env_config = env_config  # Keep for backward compatibility
+        self.full_config = full_config  # Full configuration dictionary
         self.config_save_dir = config_save_dir
 
     def _init_callback(self) -> None:
@@ -311,12 +335,18 @@ class OverwriteCheckpointCallback(BaseCallback):
     def _save_checkpoint(self) -> None:
         self.model.save(self._checkpoint_file)
         
-        # Save ENV_CONFIG to JSON file if provided
-        if self.env_config is not None and self.config_save_dir is not None:
+        # Save configuration to JSON file if provided
+        if self.config_save_dir is not None:
             os.makedirs(self.config_save_dir, exist_ok=True)
             config_path = os.path.join(self.config_save_dir, f"{self.filename}_config.json")
-            with open(config_path, 'w') as f:
-                json.dump(self.env_config, f, indent=2)
+            
+            # Save full config if available, otherwise fall back to env_config for backward compatibility
+            if self.full_config is not None:
+                with open(config_path, 'w') as f:
+                    json.dump(self.full_config, f, indent=2)
+            elif self.env_config is not None:
+                with open(config_path, 'w') as f:
+                    json.dump(self.env_config, f, indent=2)
         
         # Ensure start_timesteps is set (lazy initialization)
         if self._first_seen_timestep is None:

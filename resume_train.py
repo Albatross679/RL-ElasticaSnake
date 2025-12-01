@@ -228,8 +228,8 @@ def main():
     # Create callbacks
     reward_callback = RewardCallback(
         print_freq=config.TRAIN_CONFIG["print_freq"],
-        step_info_keys=config.TRAIN_CONFIG["step_info_keys"],
-        print_exclude_keys=config.TRAIN_CONFIG.get("print_exclude_keys", []),
+        save_keys=config.TRAIN_CONFIG["save_keys"],
+        print_keys=config.TRAIN_CONFIG.get("print_keys", []),
         save_dir=config.PATHS["log_dir"],  # Save training data to log directory
         save_freq=config.TRAIN_CONFIG.get("save_freq", 100),  # Save every N episodes
         save_steps=config.TRAIN_CONFIG.get("save_steps", True),  # Whether to save step-level data

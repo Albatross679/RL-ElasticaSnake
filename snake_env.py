@@ -28,7 +28,7 @@ class RewardCalculator:
     # Default reward weights (negative values for penalties, positive for rewards/bonuses)
     DEFAULT_REWARD_WEIGHTS = {
         "forward_progress": 1.0,
-        "lateral_penalty": -1.0,
+        "speed_perpendicular_to_heading_penalty": -1.0,  # Penalty for speed perpendicular to snake's heading direction
         "curvature_range_penalty": -0.1,
         "curvature_oscillation_reward": 1.0,
         "energy_penalty": -2.0e4,
@@ -36,7 +36,7 @@ class RewardCalculator:
         "alignment_bonus": 0.5,
         "streak_bonus": 100.0,
         "projected_speed": 2.0,
-        "lateral_speed_penalty": -1.0,  # Penalty for speed perpendicular to target direction
+        "speed_perpendicular_to_target_penalty": -1.0,  # Penalty for speed perpendicular to target direction
     }
     
     def __init__(self):
@@ -46,7 +46,7 @@ class RewardCalculator:
     def calculate_reward(
         self,
         forward_progress: float,
-        lateral: float,
+        speed_perpendicular_to_heading: float,
         curvature_array: NDArray[np.float64],
         curvature_history: list[NDArray[np.float64]],
         prev_curvature_array: Optional[NDArray[np.float64]],
@@ -65,7 +65,7 @@ class RewardCalculator:
         
         Args:
             forward_progress: Progress in the target direction
-            lateral: Lateral movement magnitude
+            speed_perpendicular_to_heading: Speed component perpendicular to snake's heading direction
             curvature_array: Current curvature array (3, n_elem-1)
             curvature_history: List of curvature arrays from last CURVATURE_HISTORY_WINDOW steps
             prev_curvature_array: Previous step curvature array (for oscillation)
@@ -87,8 +87,8 @@ class RewardCalculator:
         # Forward progress reward
         reward_terms["forward_progress"] = self._calculate_forward_progress(forward_progress)
         
-        # Lateral penalty
-        reward_terms["lateral_penalty"] = self._calculate_lateral_penalty(lateral)
+        # Lateral penalty (perpendicular to heading direction)
+        reward_terms["speed_perpendicular_to_heading_penalty"] = self._calculate_lateral_penalty(speed_perpendicular_to_heading)
         
         # Curvature range penalty (based on instantaneous curvature)
         reward_terms["curvature_range_penalty"] = self._calculate_curvature_range_penalty(
@@ -119,7 +119,7 @@ class RewardCalculator:
         reward_terms["projected_speed"] = self._calculate_projected_speed(velocity_projection)
         
         # Lateral speed penalty (perpendicular to target direction)
-        reward_terms["lateral_speed_penalty"] = self._calculate_lateral_speed_penalty(lateral_speed_perpendicular)
+        reward_terms["speed_perpendicular_to_target_penalty"] = self._calculate_lateral_speed_penalty(lateral_speed_perpendicular)
         
         total_reward = sum(reward_terms.values())
         return float(total_reward), reward_terms
@@ -130,7 +130,7 @@ class RewardCalculator:
     
     def _calculate_lateral_penalty(self, lateral: float) -> float:
         """Calculate lateral movement penalty."""
-        return self.reward_weights["lateral_penalty"] * lateral
+        return self.reward_weights["speed_perpendicular_to_heading_penalty"] * lateral
     
     def _calculate_curvature_range_penalty(
         self, curvature_array: NDArray[np.float64]
@@ -218,7 +218,7 @@ class RewardCalculator:
     
     def _calculate_lateral_speed_penalty(self, lateral_speed_perpendicular: float) -> float:
         """Calculate penalty for lateral speed perpendicular to target direction."""
-        return self.reward_weights["lateral_speed_penalty"] * lateral_speed_perpendicular
+        return self.reward_weights["speed_perpendicular_to_target_penalty"] * lateral_speed_perpendicular
 
 
 class BaseContinuumSnakeEnv(gym.Env):
@@ -279,8 +279,8 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         self._prev_com = None
         self._dir = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        self.forward = 0.0
-        self.lateral = 0.0
+        self.speed_along_heading = 0.0
+        self.speed_perpendicular_to_heading = 0.0
 
         target = np.array([1.0, 0.0, 1.0], dtype=np.float64)
         self.target_direction = target / (np.linalg.norm(target) + 1e-12)
@@ -315,8 +315,8 @@ class BaseContinuumSnakeEnv(gym.Env):
             "relative_position": [],
             "torque_coeffs": [],
             "wave_number": [],
-            "forward": [],
-            "lateral": [],
+            "speed_along_heading": [],
+            "speed_perpendicular_to_heading": [],
             "reward": [],
         }
 
@@ -551,8 +551,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         # Reset state variables
         self._prev_com = None
         self._dir = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        self.forward = 0.0
-        self.lateral = 0.0
+        self.speed_along_heading = 0.0
+        self.speed_perpendicular_to_heading = 0.0
         self.reward = 0.0
         self.velocity_projection = 0.0
         self.lateral_speed_perpendicular = 0.0
@@ -654,7 +654,7 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.state_dict["relative_position"].append(relative_positions.copy())
 
         self._prev_com = prev_com_before
-        self.forward, self.lateral, velocity_vec = self._forward_lateral_from_last_step(sim_time)
+        self.speed_along_heading, self.speed_perpendicular_to_heading, velocity_vec = self._forward_lateral_from_last_step(sim_time)
         current_com = self.shearable_rod.compute_position_center_of_mass()
         self.velocity_projection = float(np.dot(velocity_vec, self.target_direction))
         
@@ -685,7 +685,7 @@ class BaseContinuumSnakeEnv(gym.Env):
         # Calculate reward using the reward calculator
         reward, reward_terms = self.reward_calculator.calculate_reward(
             forward_progress=forward_progress,
-            lateral=self.lateral,
+            speed_perpendicular_to_heading=self.speed_perpendicular_to_heading,
             curvature_array=curvature_array,
             curvature_history=self._curvature_history,
             prev_curvature_array=self._prev_curvature_array,
@@ -709,8 +709,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         if abs(wave_length_for_state) < 1e-12:
             wave_length_for_state = 1e-12 if wave_length_for_state >= 0 else -1e-12
         self.state_dict["wave_number"].append(2.0 * np.pi / wave_length_for_state)
-        self.state_dict["forward"].append(float(self.forward))
-        self.state_dict["lateral"].append(float(self.lateral))
+        self.state_dict["speed_along_heading"].append(float(self.speed_along_heading))
+        self.state_dict["speed_perpendicular_to_heading"].append(float(self.speed_perpendicular_to_heading))
         self.state_dict["reward"].append(float(self.reward))
 
         terminated_due_to_time = self.current_time >= self.max_episode_length
@@ -723,8 +723,8 @@ class BaseContinuumSnakeEnv(gym.Env):
         info = {
             "reward": float(reward),
             "reward_terms": reward_terms,
-            "forward_speed": float(self.forward),
-            "lateral_speed": float(self.lateral),
+            "speed_along_heading": float(self.speed_along_heading),
+            "speed_perpendicular_to_heading": float(self.speed_perpendicular_to_heading),
             "lateral_speed_perpendicular": float(self.lateral_speed_perpendicular),
             "velocity_projection": float(self.velocity_projection),
             "forward_progress": forward_progress,
@@ -907,6 +907,7 @@ class FixedWavelengthXZOnlyContinuumSnakeEnv(FixedWavelengthContinuumSnakeEnv):
         # Handle director (3D matrix per element)
         elif key == "director":
             # Shape: (3, 3, n_elem) -> select rows 0,2 (x,z) -> (2, 3, n_elem) -> flatten
+            # To fix
             return rod.director_collection[[0, 2], :, :].ravel()
         
         raise ValueError(f"Unknown observation key: {key}")

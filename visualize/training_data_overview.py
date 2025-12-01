@@ -19,15 +19,21 @@ DATA_PATH = ROOT / "Training" / "Logs" / "training_data.json"
 OUTPUT_PATH = ROOT / "Training" / "Results" / "training_data_overview.html"
 # OUTPUT_PATH = ROOT / "Training" / "Results" / "fixed_action_testing_data_overview.html"
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+CONFIG_PATHS = [
+    ROOT / "Training" / "Logs" / "PPO_Snake_Model_config.json",
+    ROOT / "Training" / "Logs" / "PPO_Snake_Checkpoint_config.json",
+]
 
 REWARD_TERMS = [
     "forward_progress",
-    "projected_speed",
-    "alignment_bonus",
-    "curvature_oscillation_reward",
+    "speed_perpendicular_to_heading_penalty",
     "curvature_range_penalty",
+    "curvature_oscillation_reward",
+    "energy_penalty",
     "smoothness_penalty",
-    "lateral_penalty",
+    "alignment_bonus",
+    "projected_speed",
+    "speed_perpendicular_to_target_penalty",
 ]
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -89,6 +95,42 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       padding: 12px;
       box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
     }}
+    .config-section {{
+      background: #fff;
+      border: 1px solid #e0e7ff;
+      border-radius: 12px;
+      padding: 24px;
+      margin-top: 24px;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+    }}
+    .config-category {{
+      margin-bottom: 32px;
+    }}
+    .config-category h3 {{
+      color: #1d4ed8;
+      border-bottom: 2px solid #e0e7ff;
+      padding-bottom: 8px;
+      margin-bottom: 16px;
+    }}
+    .config-item {{
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #f1f5f9;
+    }}
+    .config-item:last-child {{
+      border-bottom: none;
+    }}
+    .config-label {{
+      font-weight: 500;
+      color: #334155;
+    }}
+    .config-value {{
+      color: #64748b;
+      text-align: right;
+      max-width: 60%;
+      word-break: break-word;
+    }}
   </style>
 </head>
 <body>
@@ -98,6 +140,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div><strong>Total timesteps</strong><br>{total_timesteps:,}</div>
     <div><strong>Episode count</strong><br>{episode_count}</div>
   </section>
+
+  <h2>Training Configuration</h2>
+  <div class="config-section">
+    {configuration_html}
+  </div>
 
   <h2>Episode metrics</h2>
   <div class="chart-grid">
@@ -124,6 +171,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="chart-full" id="step-reward"></div>
   <div class="chart-full" id="step-speed"></div>
   <div class="chart-full" id="step-simtime"></div>
+
+  <h2>Gradient norms</h2>
+  <div class="chart-grid">
+    <div id="gradient-norm-policy"></div>
+    <div id="gradient-norm-value"></div>
+  </div>
+  <div class="chart-full" id="gradient-norms-combined"></div>
 
   <h2>Action signals</h2>
   <div class="term-grid" id="action-grid"></div>
@@ -158,12 +212,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const rewardVarianceData = {reward_variance_data};
     const rewardTermLabels = {{
       forward_progress: "Forward progress",
-      projected_speed: "Projected speed",
-      alignment_bonus: "Alignment bonus",
-      curvature_oscillation_reward: "Curvature oscillation reward",
+      speed_perpendicular_to_heading_penalty: "Lateral penalty (perpendicular to heading)",
       curvature_range_penalty: "Curvature range penalty",
+      curvature_oscillation_reward: "Curvature oscillation reward",
+      energy_penalty: "Energy penalty",
       smoothness_penalty: "Smoothness penalty",
-      lateral_penalty: "Lateral penalty"
+      alignment_bonus: "Alignment bonus",
+      projected_speed: "Projected speed",
+      speed_perpendicular_to_target_penalty: "Lateral penalty (perpendicular to target direction)"
     }};
 
     const baseConfig = {{
@@ -542,9 +598,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       transform: [
         {{
           fold: [
-            "forward_speed",
+            "speed_along_heading",
             "velocity_projection",
-            "lateral_speed"
+            "speed_perpendicular_to_heading"
           ],
           as: ["metric", "value"]
         }}
@@ -604,6 +660,166 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title: "Simulation time and episode index"
     }});
 
+    embedChart("#gradient-norm-policy", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 480,
+      height: 260,
+      data: {{ 
+        values: stepsData.filter(d => d.gradient_norm_policy !== undefined && d.gradient_norm_policy !== null)
+      }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#42a5f5", opacity: 0.4 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative", title: "Timestep" }},
+            y: {{ field: "gradient_norm_policy", type: "quantitative", title: "Gradient Norm" }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: "gradient_norm_policy", type: "quantitative", format: ".6f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: "gradient_norm_policy", as: "gradient_norm_policy_smoothed" }}],
+              frame: [-200, 0],
+              sort: [{{ field: "timestep", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#1d4ed8", strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative" }},
+            y: {{ field: "gradient_norm_policy_smoothed", type: "quantitative" }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: "gradient_norm_policy_smoothed", type: "quantitative", format: ".6f", title: "Moving Avg" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Policy Gradient Norm (raw + rolling mean window = 200)"
+    }});
+
+    embedChart("#gradient-norm-value", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 480,
+      height: 260,
+      data: {{ 
+        values: stepsData.filter(d => d.gradient_norm_value !== undefined && d.gradient_norm_value !== null)
+      }},
+      layer: [
+        {{
+          mark: {{ type: "line", color: "#ef5350", opacity: 0.4 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative", title: "Timestep" }},
+            y: {{ field: "gradient_norm_value", type: "quantitative", title: "Gradient Norm" }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: "gradient_norm_value", type: "quantitative", format: ".6f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: "gradient_norm_value", as: "gradient_norm_value_smoothed" }}],
+              frame: [-200, 0],
+              sort: [{{ field: "timestep", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", color: "#c62828", strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative" }},
+            y: {{ field: "gradient_norm_value_smoothed", type: "quantitative" }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: "gradient_norm_value_smoothed", type: "quantitative", format: ".6f", title: "Moving Avg" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Value Gradient Norm (raw + rolling mean window = 200)"
+    }});
+
+    embedChart("#gradient-norms-combined", {{
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 960,
+      height: 260,
+      data: {{ values: stepsData }},
+      transform: [
+        {{
+          fold: [
+            "gradient_norm_policy",
+            "gradient_norm_value"
+          ],
+          as: ["gradient_type", "gradient_norm"]
+        }},
+        {{
+          filter: "datum.gradient_norm !== null && datum.gradient_norm !== undefined"
+        }}
+      ],
+      layer: [
+        {{
+          mark: {{ type: "line", opacity: 0.35 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative", title: "Timestep" }},
+            y: {{ field: "gradient_norm", type: "quantitative", title: "Gradient Norm" }},
+            color: {{ 
+              field: "gradient_type", 
+              type: "nominal",
+              scale: {{
+                domain: ["gradient_norm_policy", "gradient_norm_value"],
+                range: ["#42a5f5", "#ef5350"]
+              }},
+              legend: {{
+                title: "Gradient Type",
+                labelExpr: "datum.label === 'gradient_norm_policy' ? 'Policy' : 'Value'"
+              }}
+            }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: "gradient_type", type: "nominal" }},
+              {{ field: "gradient_norm", type: "quantitative", format: ".6f" }}
+            ]
+          }}
+        }},
+        {{
+          transform: [
+            {{
+              window: [{{ op: "mean", field: "gradient_norm", as: "gradient_norm_smoothed" }}],
+              frame: [-200, 0],
+              groupby: ["gradient_type"],
+              sort: [{{ field: "timestep", order: "ascending" }}]
+            }}
+          ],
+          mark: {{ type: "line", strokeWidth: 2 }},
+          encoding: {{
+            x: {{ field: "timestep", type: "quantitative" }},
+            y: {{ field: "gradient_norm_smoothed", type: "quantitative" }},
+            color: {{ 
+              field: "gradient_type", 
+              type: "nominal",
+              scale: {{
+                domain: ["gradient_norm_policy", "gradient_norm_value"],
+                range: ["#1d4ed8", "#c62828"]
+              }},
+              legend: {{
+                title: "Gradient Type",
+                labelExpr: "datum.label === 'gradient_norm_policy' ? 'Policy' : 'Value'"
+              }}
+            }},
+            tooltip: [
+              {{ field: "timestep", type: "quantitative" }},
+              {{ field: "gradient_type", type: "nominal" }},
+              {{ field: "gradient_norm_smoothed", type: "quantitative", format: ".6f", title: "Moving Avg" }}
+            ]
+          }}
+        }}
+      ],
+      title: "Gradient Norms Comparison (Policy vs Value, rolling mean window = 200)"
+    }});
+
     embedChart("#reward-terms", {{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 960,
@@ -613,12 +829,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         {{
           fold: [
             "forward_progress",
-            "projected_speed",
-            "alignment_bonus",
-            "curvature_oscillation_reward",
+            "speed_perpendicular_to_heading_penalty",
             "curvature_range_penalty",
+            "curvature_oscillation_reward",
+            "energy_penalty",
             "smoothness_penalty",
-            "lateral_penalty"
+            "alignment_bonus",
+            "projected_speed",
+            "speed_perpendicular_to_target_penalty"
           ],
           as: ["term", "value"]
         }}
@@ -757,7 +975,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     const createTermSpec = (term) => ({{
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-      data: {{ values: stepsData }},
+      data: {{ 
+        values: stepsData.filter(d => d[term] !== undefined && d[term] !== null)
+      }},
       width: 320,
       height: 220,
       encoding: {{
@@ -796,17 +1016,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           }}
         }}
       ],
-      title: rewardTermLabels[term]
+      title: rewardTermLabels[term] || term.replace(/_/g, " ").replace(/\\b\\w/g, l => l.toUpperCase())
     }});
 
     const termGridEl = document.getElementById("reward-term-grid");
-    rewardTerms.forEach((term) => {{
-      const panel = document.createElement("div");
-      panel.className = "term-panel";
-      panel.id = `reward-term-${{term}}`;
-      termGridEl.appendChild(panel);
-      embedChart(`#${{panel.id}}`, createTermSpec(term));
-    }});
+    if (rewardTerms && rewardTerms.length > 0) {{
+      rewardTerms.forEach((term) => {{
+        // Check if this term exists in any data point
+        const hasData = stepsData.some(d => d[term] !== undefined && d[term] !== null);
+        if (hasData) {{
+          const panel = document.createElement("div");
+          panel.className = "term-panel";
+          panel.id = `reward-term-${{term}}`;
+          termGridEl.appendChild(panel);
+          try {{
+            embedChart(`#${{panel.id}}`, createTermSpec(term));
+          }} catch (e) {{
+            console.warn(`Failed to create chart for term ${{term}}:`, e);
+          }}
+        }}
+      }});
+    }}
 
     const sectionNames = Array.from(new Set((curvatureSectionsData || []).map((d) => d.segment)));
     const sectionGridEl = document.getElementById("curvature-section-grid");
@@ -877,79 +1107,328 @@ def load_data(path: Path) -> dict:
         return json.load(fh)
 
 
+def load_config(paths: List[Path]) -> dict | None:
+    """Load configuration from JSON file if it exists. Tries multiple paths."""
+    for path in paths:
+        if path.exists():
+            with path.open() as fh:
+                return json.load(fh)
+    return None
+
+
+def format_config_value(value) -> str:
+    """Format a configuration value for display."""
+    if isinstance(value, bool):
+        return "Enabled" if value else "Disabled"
+    elif isinstance(value, (int, float)):
+        if isinstance(value, float) and (value < 0.01 or value > 1000):
+            return f"{value:.2e}"
+        return str(value)
+    elif isinstance(value, list):
+        if len(value) == 0:
+            return "[]"
+        elif isinstance(value[0], dict):
+            # Handle nested structures like net_arch
+            return json.dumps(value, indent=2)
+        else:
+            return ", ".join(str(v) for v in value)
+    elif isinstance(value, dict):
+        return json.dumps(value, indent=2)
+    else:
+        return str(value)
+
+
+def format_config_in_english(config: dict | None) -> str:
+    """Format configuration dictionary into readable English HTML."""
+    if not config:
+        return "<p><em>Configuration file not found.</em></p>"
+    
+    # Define human-readable labels for configuration keys
+    labels = {
+        "ENV_CONFIG": {
+            "fixed_wavelength": "Fixed Wavelength",
+            "obs_keys": "Observation Keys",
+            "period": "Period (seconds)",
+            "ratio_time": "Ratio Time",
+            "rut_ratio": "Rut Ratio",
+            "_n_elem": "Number of Elements",
+            "max_episode_length": "Max Episode Length (seconds)",
+        },
+        "REWARD_WEIGHTS": {
+            "forward_progress": "Forward Progress Weight",
+            "speed_perpendicular_to_heading_penalty": "Speed Perpendicular to Heading Penalty",
+            "speed_perpendicular_to_target_penalty": "Speed Perpendicular to Target Penalty",
+            "curvature_range_penalty": "Curvature Range Penalty",
+            "curvature_oscillation_reward": "Curvature Oscillation Reward",
+            "energy_penalty": "Energy Penalty",
+            "smoothness_penalty": "Smoothness Penalty",
+            "alignment_bonus": "Alignment Bonus",
+            "streak_bonus": "Streak Bonus",
+            "projected_speed": "Projected Speed Weight",
+        },
+        "TRAIN_CONFIG": {
+            "total_timesteps": "Total Timesteps",
+            "print_freq": "Print Frequency",
+            "step_info_keys": "Step Info Keys",
+            "print_exclude_keys": "Print Exclude Keys",
+            "save_freq": "Save Frequency",
+            "save_steps": "Save Steps",
+            "checkpoint_freq": "Checkpoint Frequency",
+        },
+        "MODEL_CONFIG": {
+            "n_steps": "Rollout Buffer Size (n_steps)",
+            "gae_lambda": "GAE Lambda (λ)",
+            "gamma": "Discount Factor (γ)",
+            "policy": "Policy Type",
+            "verbose": "Verbose Output",
+            "use_gpu": "Use GPU",
+            "use_layer_norm": "Layer Normalization",
+            "net_arch": "Network Architecture",
+            "use_orthogonal_init": "Orthogonal Weight Initialization",
+            "normalize_observations": "Normalize Observations",
+            "normalize_observations_training": "Update Normalization During Training",
+            "clip_obs": "Observation Clipping Value",
+            "max_grad_norm": "Max Gradient Norm",
+        },
+        "PATHS": {
+            "log_dir": "Log Directory",
+            "model_dir": "Model Directory",
+            "model_name": "Model Name",
+            "checkpoint_name": "Checkpoint Name",
+            "policy_gradient_viz_dir": "Policy Gradient Visualization Directory",
+        },
+    }
+    
+    # Category descriptions
+    category_descriptions = {
+        "ENV_CONFIG": "Environment Configuration",
+        "REWARD_WEIGHTS": "Reward Weights",
+        "TRAIN_CONFIG": "Training Configuration",
+        "MODEL_CONFIG": "Model Configuration",
+        "PATHS": "File Paths",
+    }
+    
+    html_parts = []
+    
+    for category, category_data in config.items():
+        if not isinstance(category_data, dict):
+            continue
+            
+        category_label = category_descriptions.get(category, category)
+        html_parts.append(f'<div class="config-category">')
+        html_parts.append(f'<h3>{category_label}</h3>')
+        
+        category_labels = labels.get(category, {})
+        
+        for key, value in category_data.items():
+            label = category_labels.get(key, key.replace("_", " ").title())
+            formatted_value = format_config_value(value)
+            html_parts.append(
+                f'<div class="config-item">'
+                f'<span class="config-label">{label}:</span>'
+                f'<span class="config-value">{formatted_value}</span>'
+                f'</div>'
+            )
+        
+        html_parts.append('</div>')
+    
+    return "\n".join(html_parts)
+
+
 def prepare_datasets(
     data: dict,
-) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict], List[str], List[Dict], List[Dict]]:
-    # Calculate total sim_time per episode from steps data (use max sim_time as episode length)
-    episode_sim_times = {}
-    for step in data["steps"]:
-        ep = step["episode"]
-        if ep not in episode_sim_times:
-            episode_sim_times[ep] = []
-        episode_sim_times[ep].append(step["sim_time"])
+) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict], List[str], List[Dict], List[Dict], List[str]]:
+    # Handle empty steps data
+    if not data.get("steps"):
+        return [], [], [], [], [], [], [], [], []
     
-    # Calculate total sim_time per episode (max sim_time in episode)
-    total_sim_time_per_ep = {}
-    for ep, sim_times in episode_sim_times.items():
-        total_sim_time_per_ep[ep] = max(sim_times) if sim_times else 0.0
+    # Calculate episode data from steps if episodes arrays are empty
+    episodes_data = data.get("episodes", {})
+    rewards_list = episodes_data.get("rewards", [])
+    lengths_list = episodes_data.get("lengths", [])
+    timesteps_list = episodes_data.get("timesteps_at_episode", [])
     
-    episodes = []
-    for idx, reward in enumerate(data["episodes"]["rewards"]):
-        length = data["episodes"]["lengths"][idx]
-        reward_per_timestep = reward / length if length > 0 else 0.0
-        total_sim_time = total_sim_time_per_ep.get(idx, 0.0)
-        reward_per_simtime = reward / total_sim_time if total_sim_time > 0 else 0.0
+    # If episodes data is empty, compute from steps
+    if not rewards_list or not lengths_list:
+        episode_rewards = {}
+        episode_lengths = {}
+        episode_sim_times = {}
+        episode_timesteps = {}
         
-        episodes.append({
-            "episode": idx,
-            "reward": reward,
-            "length": length,
-            "timesteps": data["episodes"]["timesteps_at_episode"][idx],
-            "reward_per_timestep": reward_per_timestep,
-            "reward_per_simtime": reward_per_simtime,
-        })
+        for step in data["steps"]:
+            ep = step.get("episode", 0)
+            reward = step.get("reward", 0.0)
+            sim_time = step.get("sim_time")
+            
+            # Accumulate reward and count steps per episode
+            if ep not in episode_rewards:
+                episode_rewards[ep] = 0.0
+                episode_lengths[ep] = 0
+                episode_timesteps[ep] = step.get("timestep", 0)
+                episode_sim_times[ep] = []
+            
+            episode_rewards[ep] += reward
+            episode_lengths[ep] += 1
+            if sim_time is not None:
+                episode_sim_times[ep].append(sim_time)
+        
+        # Calculate total sim_time per episode (max sim_time in episode)
+        total_sim_time_per_ep = {}
+        for ep, sim_times in episode_sim_times.items():
+            total_sim_time_per_ep[ep] = max(sim_times) if sim_times else 0.0
+        
+        # Build episodes list
+        episodes = []
+        max_episode = max(episode_rewards.keys()) if episode_rewards else -1
+        cumulative_timesteps = 0
+        
+        for idx in range(max_episode + 1):
+            if idx in episode_rewards:
+                reward = episode_rewards[idx]
+                length = episode_lengths[idx]
+                cumulative_timesteps += length
+                reward_per_timestep = reward / length if length > 0 else 0.0
+                total_sim_time = total_sim_time_per_ep.get(idx, 0.0)
+                reward_per_simtime = reward / total_sim_time if total_sim_time > 0 else 0.0
+                
+                episodes.append({
+                    "episode": idx,
+                    "reward": reward,
+                    "length": length,
+                    "timesteps": cumulative_timesteps,
+                    "reward_per_timestep": reward_per_timestep,
+                    "reward_per_simtime": reward_per_simtime,
+                })
+    else:
+        # Use existing episodes data
+        # Calculate total sim_time per episode from steps data (use max sim_time as episode length)
+        episode_sim_times = {}
+        for step in data["steps"]:
+            ep = step.get("episode", 0)
+            sim_time = step.get("sim_time")
+            if sim_time is not None:
+                if ep not in episode_sim_times:
+                    episode_sim_times[ep] = []
+                episode_sim_times[ep].append(sim_time)
+        
+        # Calculate total sim_time per episode (max sim_time in episode)
+        total_sim_time_per_ep = {}
+        for ep, sim_times in episode_sim_times.items():
+            total_sim_time_per_ep[ep] = max(sim_times) if sim_times else 0.0
+        
+        episodes = []
+        for idx, reward in enumerate(rewards_list):
+            length = lengths_list[idx] if idx < len(lengths_list) else 0
+            reward_per_timestep = reward / length if length > 0 else 0.0
+            total_sim_time = total_sim_time_per_ep.get(idx, 0.0)
+            reward_per_simtime = reward / total_sim_time if total_sim_time > 0 else 0.0
+            timesteps = timesteps_list[idx] if idx < len(timesteps_list) else 0
+            
+            episodes.append({
+                "episode": idx,
+                "reward": reward,
+                "length": length,
+                "timesteps": timesteps,
+                "reward_per_timestep": reward_per_timestep,
+                "reward_per_simtime": reward_per_simtime,
+            })
 
     steps_data: List[Dict] = []
     curvature_sections: List[Dict] = []
-    segments = len(data["steps"][0]["curvatures"][0])
+    
+    # Check if curvatures are available in the data
+    has_curvatures = False
+    segments = 0
+    if data["steps"] and len(data["steps"]) > 0:
+        first_step = data["steps"][0]
+        if "curvatures" in first_step:
+            try:
+                curvatures = first_step["curvatures"]
+                if isinstance(curvatures, list) and len(curvatures) > 0:
+                    if isinstance(curvatures[0], list) and len(curvatures[0]) > 0:
+                        segments = len(curvatures[0])
+                        has_curvatures = True
+            except (KeyError, IndexError, TypeError):
+                has_curvatures = False
+    
     action_fields: List[str] = []
     for step in data["steps"]:
-        curvature_components = step["curvatures"]
         segment_norms = []
-        for seg_idx in range(segments):
-            x = curvature_components[0][seg_idx]
-            y = curvature_components[1][seg_idx]
-            z = curvature_components[2][seg_idx]
-            segment_norm = math.sqrt(x * x + y * y + z * z)
-            segment_norms.append(segment_norm)
-            curvature_sections.append(
-                {
-                    "timestep": step["timestep"],
-                    "segment": f"Section {seg_idx + 1}",
-                    "value": segment_norm,
-                }
-            )
+        
+        # Process curvatures if available
+        if has_curvatures and "curvatures" in step:
+            curvature_components = step["curvatures"]
+            if isinstance(curvature_components, list) and len(curvature_components) >= 3:
+                for seg_idx in range(segments):
+                    try:
+                        x = curvature_components[0][seg_idx]
+                        y = curvature_components[1][seg_idx]
+                        z = curvature_components[2][seg_idx]
+                        segment_norm = math.sqrt(x * x + y * y + z * z)
+                        segment_norms.append(segment_norm)
+                        curvature_sections.append(
+                            {
+                                "timestep": step["timestep"],
+                                "segment": f"Section {seg_idx + 1}",
+                                "value": segment_norm,
+                            }
+                        )
+                    except (IndexError, TypeError):
+                        pass
 
         entry = {
-            "timestep": step["timestep"],
-            "reward": step["reward"],
-            "sim_time": step["sim_time"],
-            "forward_speed": step["forward_speed"],
-            "lateral_speed": step["lateral_speed"],
-            "velocity_projection": step["velocity_projection"],
-            "episode": step["episode"],
-            "curvature_norm_avg": sum(segment_norms) / segments if segment_norms else 0.0,
+            "timestep": step.get("timestep", 0),
+            "reward": step.get("reward", 0.0),
+            "sim_time": step.get("sim_time"),
+            "episode": step.get("episode", 0),
+            "curvature_norm_avg": sum(segment_norms) / segments if segment_norms and segments > 0 else 0.0,
         }
+        
+        # Add optional fields if they exist
+        if "speed_along_heading" in step:
+            entry["speed_along_heading"] = step["speed_along_heading"]
+        if "speed_perpendicular_to_heading" in step:
+            entry["speed_perpendicular_to_heading"] = step["speed_perpendicular_to_heading"]
+        if "velocity_projection" in step:
+            entry["velocity_projection"] = step["velocity_projection"]
+        
+        # Add gradient norms if available
+        if "gradient_norm_policy" in step:
+            entry["gradient_norm_policy"] = step["gradient_norm_policy"]
+        if "gradient_norm_value" in step:
+            entry["gradient_norm_value"] = step["gradient_norm_value"]
+        
+        # Process actions if available
         actions = step.get("action", [])
-        for idx, value in enumerate(actions):
-            field_name = f"action_{idx + 1}"
-            entry[field_name] = value
-            if idx >= len(action_fields):
-                action_fields.append(field_name)
-        entry.update(step["reward_terms"])
+        if actions:
+            for idx, value in enumerate(actions):
+                field_name = f"action_{idx + 1}"
+                entry[field_name] = value
+                if idx >= len(action_fields):
+                    action_fields.append(field_name)
+        
+        # Add reward terms if available (could be a dict or individual fields)
+        # Prioritize reward_terms dict values over top-level fields
+        reward_terms_dict = {}
+        if "reward_terms" in step:
+            if isinstance(step["reward_terms"], dict):
+                reward_terms_dict = step["reward_terms"]
+        
+        # Check for individual reward term fields that might be in step_info_keys
+        # Use reward_terms dict value if available, otherwise use top-level field
+        for term in REWARD_TERMS:
+            if term in reward_terms_dict:
+                entry[term] = reward_terms_dict[term]
+            elif term in step:
+                entry[term] = step[term]
+        
         steps_data.append(entry)
 
-    mean_grid, std_grid = compute_curvature_stats(data["steps"])
+    # Compute curvature stats only if curvatures are available
+    if has_curvatures:
+        mean_grid, std_grid = compute_curvature_stats(data["steps"])
+    else:
+        mean_grid, std_grid = [], []
     mean_records = []
     std_records = []
     for band_idx, (mean_row, std_row) in enumerate(zip(mean_grid, std_grid)):
@@ -995,34 +1474,79 @@ def prepare_datasets(
                 "variance": variance,
                 "std_dev": std_dev,
             })
+    
+    # Dynamically detect which reward terms are actually present in the data
+    # First, check if reward_terms dict exists in any step
+    reward_terms_from_dict = set()
+    for step in steps_data:
+        if "reward_terms" in step and isinstance(step["reward_terms"], dict):
+            reward_terms_from_dict.update(step["reward_terms"].keys())
+    
+    # Exclude non-reward-term fields
+    excluded_fields = {
+        "timestep", "reward", "sim_time", "episode", "curvature_norm_avg",
+        "speed_along_heading", "speed_perpendicular_to_heading", "velocity_projection",
+        "forward_progress", "alignment", "alignment_streak", "alignment_goal_met",
+        "speed_perpendicular_to_target", "lateral_speed_perpendicular", "position",
+        "heading_dir", "current_time", "speed", "captured_at",
+        "gradient_norm_policy", "gradient_norm_value", "reward_terms"
+    }
+    # Also exclude action fields
+    excluded_fields.update({f"action_{i+1}" for i in range(20)})  # Cover up to 20 actions
+    
+    # Find reward terms that are actually present in the data
+    detected_reward_terms = []
+    for term in REWARD_TERMS:
+        # Check if term exists as a direct field in any step
+        if any(term in step and step[term] is not None for step in steps_data):
+            detected_reward_terms.append(term)
+        # Or if it's in the reward_terms dict
+        elif term in reward_terms_from_dict:
+            detected_reward_terms.append(term)
 
-    return episodes, steps_data, mean_records, std_records, curvature_sections, action_fields, early_late_comparison, reward_variance_data
+    return episodes, steps_data, mean_records, std_records, curvature_sections, action_fields, early_late_comparison, reward_variance_data, detected_reward_terms
 
 
 def compute_curvature_stats(steps: List[dict]) -> Tuple[List[List[float]], List[List[float]]]:
-    count = len(steps)
-    bands = len(steps[0]["curvatures"])
-    segments = len(steps[0]["curvatures"][0])
-    sums = [[0.0 for _ in range(segments)] for _ in range(bands)]
-    sq_sums = [[0.0 for _ in range(segments)] for _ in range(bands)]
+    """Compute curvature statistics. Returns empty lists if curvatures are not available."""
+    if not steps or "curvatures" not in steps[0]:
+        return [], []
+    
+    try:
+        count = len(steps)
+        bands = len(steps[0]["curvatures"])
+        segments = len(steps[0]["curvatures"][0])
+        sums = [[0.0 for _ in range(segments)] for _ in range(bands)]
+        sq_sums = [[0.0 for _ in range(segments)] for _ in range(bands)]
 
-    for entry in steps:
-        curvatures = entry["curvatures"]
-        for b in range(bands):
-            for seg in range(segments):
-                val = curvatures[b][seg]
-                sums[b][seg] += val
-                sq_sums[b][seg] += val * val
+        for entry in steps:
+            if "curvatures" not in entry:
+                continue
+            curvatures = entry["curvatures"]
+            if not isinstance(curvatures, list) or len(curvatures) < bands:
+                continue
+            for b in range(bands):
+                if not isinstance(curvatures[b], list) or len(curvatures[b]) < segments:
+                    continue
+                for seg in range(segments):
+                    try:
+                        val = curvatures[b][seg]
+                        sums[b][seg] += val
+                        sq_sums[b][seg] += val * val
+                    except (IndexError, TypeError):
+                        pass
 
-    means = [[sums[b][seg] / count for seg in range(segments)] for b in range(bands)]
-    stds = [
-        [
-            math.sqrt(max(sq_sums[b][seg] / count - means[b][seg] ** 2, 0.0))
-            for seg in range(segments)
+        means = [[sums[b][seg] / count for seg in range(segments)] for b in range(bands)]
+        stds = [
+            [
+                math.sqrt(max(sq_sums[b][seg] / count - means[b][seg] ** 2, 0.0))
+                for seg in range(segments)
+            ]
+            for b in range(bands)
         ]
-        for b in range(bands)
-    ]
-    return means, stds
+        return means, stds
+    except (KeyError, IndexError, TypeError):
+        return [], []
 
 
 def render_html(
@@ -1035,16 +1559,19 @@ def render_html(
     action_fields: List[str],
     early_late_comparison: List[Dict],
     reward_variance: List[Dict],
+    configuration_html: str,
+    detected_reward_terms: List[str],
 ) -> str:
     return HTML_TEMPLATE.format(
         saved_at=metadata["saved_at"],
         total_timesteps=metadata["total_timesteps"],
         episode_count=metadata["episode_count"],
+        configuration_html=configuration_html,
         episodes_data=json.dumps(episodes),
         steps_data=json.dumps(steps),
         curvature_mean_data=json.dumps(curvature_mean),
         curvature_std_data=json.dumps(curvature_std),
-        reward_terms=json.dumps(REWARD_TERMS),
+        reward_terms=json.dumps(detected_reward_terms),
         curvature_sections_data=json.dumps(curvature_sections),
         action_fields=json.dumps(action_fields),
         early_late_comparison_data=json.dumps(early_late_comparison),
@@ -1081,9 +1608,20 @@ def main() -> None:
         action_fields,
         early_late_comparison,
         reward_variance,
+        detected_reward_terms,
     ) = prepare_datasets(data)
+    
+    # Load and format configuration
+    config = load_config(CONFIG_PATHS)
+    configuration_html = format_config_in_english(config) if config else format_config_in_english(None)
+    
+    # Update metadata episode_count if it's 0 or missing
+    metadata = data["metadata"].copy()
+    if metadata.get("episode_count", 0) == 0 and episodes:
+        metadata["episode_count"] = len(episodes)
+    
     html = render_html(
-        data["metadata"],
+        metadata,
         episodes,
         steps_data,
         mean_records,
@@ -1092,6 +1630,8 @@ def main() -> None:
         action_fields,
         early_late_comparison,
         reward_variance,
+        configuration_html,
+        detected_reward_terms,
     )
     OUTPUT_PATH.write_text(html)
     print(f"Wrote {OUTPUT_PATH}")
