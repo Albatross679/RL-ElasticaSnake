@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from typing import List, Dict, Tuple
 from collections import defaultdict
 
@@ -228,7 +229,8 @@ def main():
     
     # Determine optimal sample size
     action_dim = 6  # For FixedWavelengthContinuumSnakeEnv
-    n_samples = determine_optimal_sample_size(action_dim)
+    # n_samples = determine_optimal_sample_size(action_dim)
+    n_samples = 200
     print(f"\nRecommended number of samples: {n_samples}")
     print(f"Action space dimension: {action_dim}")
     print(f"Action range: [-1, 1] for each dimension")
@@ -244,10 +246,13 @@ def main():
         print("Using default sample size.")
     
     print(f"\nGenerating {n_samples} diverse action samples...")
+    gen_start = time.time()
     
     # Generate diverse actions
     actions = generate_diverse_actions(n_samples=n_samples, action_dim=action_dim)
-    print(f"Generated {len(actions)} action samples")
+    
+    gen_time = time.time() - gen_start
+    print(f"✓ Generated {len(actions)} action samples in {gen_time:.2f}s")
     
     # Create environment
     print("\nCreating environment...")
@@ -268,22 +273,86 @@ def main():
     n_steps = 1000
     
     print("\nRunning actions in environment...")
+    print(f"Total actions to run: {len(actions)}")
+    print(f"Steps per action: {n_steps}")
+    print("-" * 70)
+    
+    start_time = time.time()
+    last_print_time = start_time
+    
     for i, action in enumerate(actions):
-        if (i + 1) % 10 == 0 or i == 0:
-            print(f"  Progress: {i + 1}/{len(actions)} ({100 * (i + 1) / len(actions):.1f}%)")
+        action_start_time = time.time()
+        
+        # Print progress more frequently
+        # For small numbers, print every action; for larger numbers, print every 5%
+        if len(actions) <= 20:
+            print_every = 1  # Print every action
+        else:
+            print_every = max(1, len(actions) // 20)  # Print every ~5%
+        
+        print_progress = (
+            i == 0 or  # First action
+            (i + 1) % print_every == 0 or  # Every N actions
+            (i + 1) == len(actions)  # Last action
+        )
+        
+        if print_progress:
+            elapsed = time.time() - start_time
+            if i > 0:
+                avg_time_per_action = elapsed / (i + 1)
+                remaining_actions = len(actions) - (i + 1)
+                eta_seconds = avg_time_per_action * remaining_actions
+                eta_minutes = eta_seconds / 60
+                if eta_minutes < 1:
+                    eta_str = f"{eta_seconds:.1f}s"
+                else:
+                    eta_str = f"{eta_minutes:.1f}min"
+            else:
+                eta_str = "calculating..."
+            
+            progress_pct = 100 * (i + 1) / len(actions)
+            elapsed_minutes = elapsed / 60
+            if elapsed_minutes < 1:
+                elapsed_str = f"{elapsed:.1f}s"
+            else:
+                elapsed_str = f"{elapsed_minutes:.1f}min"
+            
+            print(f"  [{i + 1:4d}/{len(actions)}] ({progress_pct:5.1f}%) | "
+                  f"Elapsed: {elapsed_str} | ETA: {eta_str}", end="", flush=True)
         
         try:
             result = calculate_heading_direction(env, action, n_steps=n_steps)
             result["sample_id"] = i
             results.append(result)
+            
+            if print_progress:
+                action_time = time.time() - action_start_time
+                print(f" | Action time: {action_time:.2f}s | "
+                      f"Speed: {result['speed']:.4f} | "
+                      f"Displacement: {result['displacement_magnitude']:.4f}")
         except Exception as e:
-            print(f"  Error with action {i}: {e}")
+            if print_progress:
+                print(f" | ERROR: {e}")
+            else:
+                print(f"\n  Error with action {i}: {e}")
             continue
     
-    print(f"\nCompleted {len(results)}/{len(actions)} action runs")
+    total_time = time.time() - start_time
+    total_minutes = total_time / 60
+    if total_minutes < 1:
+        total_time_str = f"{total_time:.1f}s"
+    else:
+        total_time_str = f"{total_minutes:.1f}min"
+    
+    print("-" * 70)
+    print(f"\nCompleted {len(results)}/{len(actions)} action runs in {total_time_str}")
+    if len(results) > 0:
+        avg_time = total_time / len(results)
+        print(f"Average time per action: {avg_time:.2f}s")
     
     # Analyze results
     print("\nAnalyzing results...")
+    analysis_start = time.time()
     
     # Group by heading direction (using spherical coordinates for clustering)
     heading_directions = np.array([r["heading_direction"] for r in results])
@@ -327,11 +396,15 @@ def main():
         "results": results,
     }
     
+    analysis_time = time.time() - analysis_start
+    print(f"✓ Analysis completed in {analysis_time:.2f}s")
+    
     print(f"\nSaving results to {output_file}...")
+    save_start = time.time()
     with open(output_file, 'w') as f:
         json.dump(output_data, f, indent=2)
-    
-    print(f"\nResults saved successfully!")
+    save_time = time.time() - save_start
+    print(f"✓ Results saved successfully in {save_time:.2f}s!")
     print(f"\nSummary:")
     print(f"  Total samples: {len(results)}")
     print(f"  Steps per sample: {n_steps}")
