@@ -18,18 +18,22 @@ import config
 import time
 
 
-def create_environment():
+def create_environment(env_config=None):
     """Create and configure the environment"""
+    # Use provided env_config or fall back to config.ENV_CONFIG
+    if env_config is None:
+        env_config = config.ENV_CONFIG
+    
     env = FixedWavelengthXZOnlyContinuumSnakeEnv(
-        fixed_wavelength=config.ENV_CONFIG["fixed_wavelength"],
-        obs_keys=config.ENV_CONFIG["obs_keys"],
+        fixed_wavelength=env_config["fixed_wavelength"],
+        obs_keys=env_config["obs_keys"],
     )
     
     # Configure environment parameters
-    env.period = config.ENV_CONFIG["period"]
-    env.ratio_time = config.ENV_CONFIG["ratio_time"]
-    env.rut_ratio = config.ENV_CONFIG["rut_ratio"]
-    env.max_episode_length = config.ENV_CONFIG["max_episode_length"]
+    env.period = env_config["period"]
+    env.ratio_time = env_config["ratio_time"]
+    env.rut_ratio = env_config["rut_ratio"]
+    env.max_episode_length = env_config["max_episode_length"]
     env.reward_weights = config.REWARD_WEIGHTS
     
     return env
@@ -72,7 +76,7 @@ def main():
     
     # Create directories
     os.makedirs(config.PATHS["log_dir"], exist_ok=True)
-    os.makedirs(config.PATHS["model_dir"], exist_ok=True)
+    os.makedirs(config.PATHS["train_save_dir"], exist_ok=True)
     
     # Create environment
     print("\nCreating environment...")
@@ -99,7 +103,8 @@ def main():
         print("    Note: Standardized values are NOT bounded to [0,1] - they can be large!")
         print("    Clipping to [-10, 10] to handle outliers (most values will be within [-3, 3])")
         # Wrap in DummyVecEnv (required for VecNormalize)
-        env = DummyVecEnv([create_environment])
+        # Use lambda to capture env_config (even though it's None here, keeps structure consistent)
+        env = DummyVecEnv([lambda: create_environment()])
         # Apply VecNormalize wrapper
         clip_value = config.MODEL_CONFIG.get("clip_obs", 10.0)
         env = VecNormalize(
@@ -111,7 +116,7 @@ def main():
         )
     else:
         # Wrap in DummyVecEnv for consistency (PPO works with vectorized environments)
-        env = DummyVecEnv([create_environment])
+        env = DummyVecEnv([lambda: create_environment()])
     
     # Optional: Check environment (can be slow, comment out for production)
     # print("\nChecking environment...")
@@ -210,7 +215,7 @@ def main():
     }
     checkpoint_callback = OverwriteCheckpointCallback(
         checkpoint_freq=config.TRAIN_CONFIG.get("checkpoint_freq", 10_000),
-        save_path=config.PATHS["model_dir"],
+        save_path=config.PATHS["train_save_dir"],
         filename=config.PATHS.get("checkpoint_name", "checkpoint"),
         verbose=1,
         checkpoint_hooks=[reward_callback.checkpoint_hook],
@@ -236,12 +241,12 @@ def main():
         print("\nTraining interrupted by user. Saving model...")
     
     # Save model (SB3 automatically adds .zip extension)
-    model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
+    model_path = os.path.join(config.PATHS["train_save_dir"], config.PATHS["train_save_name"])
     model.save(model_path)
     print(f"\nTraining finished! Model saved to {model_path}.zip")
     
     # Save complete configuration to JSON file alongside the model
-    config_path = os.path.join(config.PATHS["log_dir"], f"{config.PATHS['model_name']}_config.json")
+    config_path = os.path.join(config.PATHS["log_dir"], f"{config.PATHS['train_save_name']}_config.json")
     full_config = {
         "ENV_CONFIG": config.ENV_CONFIG,
         "REWARD_WEIGHTS": config.REWARD_WEIGHTS,
@@ -255,7 +260,7 @@ def main():
     
     # Save VecNormalize statistics if observation normalization is enabled
     if normalize_obs and isinstance(env, VecNormalize):
-        vec_normalize_path = os.path.join(config.PATHS["model_dir"], f"{config.PATHS['model_name']}_vec_normalize.pkl")
+        vec_normalize_path = os.path.join(config.PATHS["train_save_dir"], f"{config.PATHS['train_save_name']}_vec_normalize.pkl")
         env.save(vec_normalize_path)
         print(f"VecNormalize statistics saved to {vec_normalize_path}")
         print("  (Load this when testing/evaluating the model to use the same normalization)")

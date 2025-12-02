@@ -76,7 +76,7 @@ def main():
     
     # Create directories
     os.makedirs(config.PATHS["log_dir"], exist_ok=True)
-    os.makedirs(config.PATHS["model_dir"], exist_ok=True)
+    os.makedirs(config.PATHS["resume_save_dir"], exist_ok=True)
     
     # Determine model path
     if len(sys.argv) > 1:
@@ -88,7 +88,7 @@ def main():
                 model_path = model_path_zip
     else:
         # Use default model path from config
-        model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
+        model_path = os.path.join(config.PATHS["resume_load_dir"], config.PATHS["resume_load_name"])
         # Check with .zip extension (Stable Baselines3 saves with .zip)
         if not os.path.exists(model_path):
             model_path_zip = model_path + '.zip'
@@ -101,7 +101,7 @@ def main():
         print("Please provide a valid model path as an argument, or ensure the default model exists.")
         print(f"Usage: python resume_train.py [model_path]")
         # List available models
-        model_dir = config.PATHS["model_dir"]
+        model_dir = config.PATHS["resume_load_dir"]
         if os.path.exists(model_dir):
             available_models = [f for f in os.listdir(model_dir) if f.endswith('.zip')]
             if available_models:
@@ -119,7 +119,7 @@ def main():
     # Try checkpoint config first, then model config
     config_paths = [
         os.path.join(config.PATHS["log_dir"], f"{model_basename}_config.json"),
-        os.path.join(config.PATHS["log_dir"], f"{config.PATHS['model_name']}_config.json"),
+        os.path.join(config.PATHS["log_dir"], f"{config.PATHS['resume_load_name']}_config.json"),
     ]
     
     saved_env_config = None
@@ -127,7 +127,18 @@ def main():
         if os.path.exists(config_path):
             print(f"\nLoading saved environment configuration from {config_path}...")
             with open(config_path, 'r') as f:
-                saved_env_config = json.load(f)
+                loaded_config = json.load(f)
+            # Extract ENV_CONFIG from the full config structure
+            # The saved config has structure: {"ENV_CONFIG": {...}, "REWARD_WEIGHTS": {...}, ...}
+            if isinstance(loaded_config, dict) and "ENV_CONFIG" in loaded_config:
+                saved_env_config = loaded_config["ENV_CONFIG"]
+            elif isinstance(loaded_config, dict) and "fixed_wavelength" in loaded_config:
+                # Legacy format: config file directly contains ENV_CONFIG fields
+                saved_env_config = loaded_config
+            else:
+                print(f"  ⚠ Warning: Unexpected config file structure. Using config.ENV_CONFIG.")
+                saved_env_config = config.ENV_CONFIG
+                break
             print("  ✓ Configuration loaded successfully")
             print(f"  Observation keys: {saved_env_config.get('obs_keys', 'N/A')}")
             break
@@ -151,6 +162,9 @@ def main():
         print(f"  {key}: {value}")
     
     # Check if VecNormalize statistics file exists (for observation normalization)
+    # Note: VecNormalize uses STANDARDIZATION (mean=0, std=1), NOT min-max scaling to [0,1]
+    # After standardization, values can still be large (e.g., 5, 10, or more standard deviations)
+    # Clipping prevents extreme outliers from destabilizing training
     vec_normalize_path = model_path.replace('.zip', '_vec_normalize.pkl')
     if not vec_normalize_path.endswith('.pkl'):
         vec_normalize_path = model_path + '_vec_normalize.pkl'
@@ -163,8 +177,13 @@ def main():
         print("\n  ✓ Observation normalization enabled (VecNormalize)")
         if has_vec_normalize_file:
             print(f"    Loading VecNormalize statistics from {vec_normalize_path}")
+            print("    Standardizing observations to mean=0, std=1 using saved statistics")
         else:
             print("    Creating new VecNormalize statistics")
+            print("    Standardizing observations to mean=0, std=1 using running statistics")
+        print("    Note: Standardized values are NOT bounded to [0,1] - they can be large!")
+        clip_value = config.MODEL_CONFIG.get("clip_obs", 10.0)
+        print(f"    Clipping to [-{clip_value}, {clip_value}] to handle outliers (most values will be within [-3, 3])")
         
         # Wrap in DummyVecEnv (required for VecNormalize)
         # Use lambda to capture saved_env_config
@@ -236,16 +255,26 @@ def main():
         total_timesteps=config.TRAIN_CONFIG["total_timesteps"],
     )
     
+    # Prepare full configuration for saving (use saved_env_config if available, otherwise current config)
+    full_config = {
+        "ENV_CONFIG": saved_env_config if saved_env_config else config.ENV_CONFIG,
+        "REWARD_WEIGHTS": config.REWARD_WEIGHTS,
+        "TRAIN_CONFIG": config.TRAIN_CONFIG,
+        "MODEL_CONFIG": config.MODEL_CONFIG,
+        "PATHS": config.PATHS,
+    }
+    
     # Add checkpoint callback to save model periodically (every 10 iterations = ~27k timesteps)
     checkpoint_callback = OverwriteCheckpointCallback(
         checkpoint_freq=config.TRAIN_CONFIG.get("checkpoint_freq", 10_000),
-        save_path=config.PATHS["model_dir"],
+        save_path=config.PATHS["resume_save_dir"],
         filename=config.PATHS.get("checkpoint_name", "checkpoint"),
         verbose=1,
         checkpoint_hooks=[reward_callback.checkpoint_hook],
         total_timesteps=config.TRAIN_CONFIG["total_timesteps"],
-        env_config=saved_env_config,
+        env_config=saved_env_config,  # Keep for backward compatibility
         config_save_dir=config.PATHS["log_dir"],
+        full_config=full_config,  # Pass full configuration
     )
     
     # Combine callbacks
@@ -265,15 +294,30 @@ def main():
         print("\nTraining interrupted by user. Saving model...")
     
     # Save model (SB3 automatically adds .zip extension)
-    save_model_path = os.path.join(config.PATHS["model_dir"], config.PATHS["model_name"])
+    save_model_path = os.path.join(config.PATHS["resume_save_dir"], config.PATHS["resume_save_name"])
     model.save(save_model_path)
     print(f"\nTraining finished! Model saved to {save_model_path}.zip")
     
+    # Save complete configuration to JSON file alongside the model
+    config_path = os.path.join(config.PATHS["log_dir"], f"{config.PATHS['resume_save_name']}_config.json")
+    # Use saved_env_config if available, otherwise current config
+    full_config = {
+        "ENV_CONFIG": saved_env_config if saved_env_config else config.ENV_CONFIG,
+        "REWARD_WEIGHTS": config.REWARD_WEIGHTS,
+        "TRAIN_CONFIG": config.TRAIN_CONFIG,
+        "MODEL_CONFIG": config.MODEL_CONFIG,
+        "PATHS": config.PATHS,
+    }
+    with open(config_path, 'w') as f:
+        json.dump(full_config, f, indent=2)
+    print(f"Complete training configuration saved to {config_path}")
+    
     # Save VecNormalize statistics if observation normalization is enabled
     if (normalize_obs or has_vec_normalize_file) and isinstance(env, VecNormalize):
-        vec_normalize_save_path = os.path.join(config.PATHS["model_dir"], f"{config.PATHS['model_name']}_vec_normalize.pkl")
+        vec_normalize_save_path = os.path.join(config.PATHS["resume_save_dir"], f"{config.PATHS['resume_save_name']}_vec_normalize.pkl")
         env.save(vec_normalize_save_path)
         print(f"VecNormalize statistics saved to {vec_normalize_save_path}")
+        print("  (Load this when testing/evaluating the model to use the same normalization)")
     
     # Close environment
     env.close()

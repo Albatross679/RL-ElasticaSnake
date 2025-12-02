@@ -56,7 +56,7 @@ REWARD_WEIGHTS = {
 
 # Training configuration
 TRAIN_CONFIG = {
-    "total_timesteps": 11_000,  # Change to 50_000 or more for full training
+    "total_timesteps": 4_000_000,  # Change to 50_000 or more for full training
     "print_freq": 100,  # Controls both step-level and episode-level printing frequency
     
     # Keys to save to training_data.json (step-level snapshots)
@@ -138,9 +138,21 @@ MODEL_CONFIG = {
 # Paths
 PATHS = {
     "log_dir": "Training/Logs",
-    "model_dir": "Training/Saved_Models",
-    "model_name": "PPO_Snake_Model",
+    "model_dir": "Training/Saved_Models",  # Legacy: kept for backward compatibility
+    "model_name": "PPO_Snake_Model",  # Legacy: kept for backward compatibility
     "checkpoint_name": "PPO_Snake_Checkpoint",
     "policy_gradient_viz_dir": "policy_gradient_visualizations",  # Output directory for policy gradient visualizations
+    
+    # Model paths for train.py (where to save models during initial training)
+    "train_save_dir": "Training/Saved_Models",
+    "train_save_name": "PPO_Snake_Model",
+    
+    # Model paths for resume_train.py (where to load models from)
+    "resume_load_dir": "Training/Saved_Models",
+    "resume_load_name": "PPO_Snake_Model",
+    
+    # Model paths for resume_train.py (where to save models when resuming)
+    "resume_save_dir": "Training/Saved_Models",
+    "resume_save_name": "PPO_Snake_Model",
 }
 
