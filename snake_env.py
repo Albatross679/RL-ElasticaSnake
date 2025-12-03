@@ -257,7 +257,7 @@ class BaseContinuumSnakeEnv(gym.Env):
 
         self.period = 2.0
         self.ratio_time = 11.0
-        self.time_step = 1e-4
+        self.time_step = 1e-2
         self.rut_ratio = 1
         self.slip_velocity_tol = 1e-8
         self.max_episode_length = 300  # Maximum simulation time (seconds) before episode termination
@@ -265,10 +265,10 @@ class BaseContinuumSnakeEnv(gym.Env):
         self.start = np.zeros((3,))
         self.direction = np.array([0.0, 0.0, 1.0])
         self.normal = np.array([0.0, 1.0, 0.0])
-        self.base_length = 0.35
+        self.base_length = 1 #0.35
         self.base_radius = self.base_length * 0.011
         self.density = 1000
-        self.E = 1e6
+        self.E = 1
         self.poisson_ratio = 0.5
         self.shear_modulus = self.E / (1.0 + self.poisson_ratio)
 
@@ -338,19 +338,6 @@ class BaseContinuumSnakeEnv(gym.Env):
     def _default_action(self) -> NDArray[np.float64]:
         raise NotImplementedError
 
-    def _map_action_to_torque(self, action: NDArray[np.float64]) -> NDArray[np.float64]:
-        action_arr = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
-        # Linear mapping: 0 -> 0 torque, 1 -> max torque
-        torques = action_arr * self._torque_max
-        return torques.astype(np.float64)
-
-    def _map_torque_to_action(self, torque: NDArray[np.float64]) -> NDArray[np.float64]:
-        torque_arr = np.asarray(torque, dtype=np.float64)
-        magnitudes = np.abs(torque_arr)
-        clipped = np.clip(magnitudes, 0.0, self._torque_max)
-        abs_action = (self._torque_max - clipped) / self._torque_span
-        abs_action = np.clip(abs_action, 0.0, 1.0)
-        return (abs_action * np.sign(torque_arr)).astype(np.float64)
 
     def _augment_action(self, action: NDArray[np.float64]) -> NDArray[np.float64]:
         raise NotImplementedError
@@ -751,18 +738,19 @@ class FixedWavelengthContinuumSnakeEnv(BaseContinuumSnakeEnv):
         super().__init__(obs_keys=obs_keys)
 
     def _action_space_bounds(self) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
-        low = -np.ones(6, dtype=np.float32)
-        high = np.ones(6, dtype=np.float32)
+        low = np.full(6, -8e-3, dtype=np.float32)
+        high = np.full(6, 8e-3, dtype=np.float32)
         return low, high
 
     def _default_action(self) -> NDArray[np.float64]:
-        torques = self._default_torque_coeffs()
-        return self._map_torque_to_action(torques)
+        # Default torques are already in action range [-8e-3, 8e-3]
+        return self._default_torque_coeffs()
 
     def _augment_action(self, action: NDArray[np.float64]) -> NDArray[np.float64]:
         if action.shape[-1] != 6:
             raise ValueError("Expected 6 torque coefficients for fixed-wavelength control.")
-        torques = self._map_action_to_torque(action)
+        # Actions are already in torque range [-8e-3, 8e-3] (enforced by action space)
+        torques = np.asarray(action, dtype=np.float64)
         return np.append(torques, self.fixed_wavelength)
 
 
@@ -778,16 +766,16 @@ class VariableWavelengthContinuumSnakeEnv(BaseContinuumSnakeEnv):
         super().__init__(obs_keys=obs_keys)
 
     def _action_space_bounds(self) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
-        low = -np.ones(7, dtype=np.float32)
-        high = np.ones(7, dtype=np.float32)
+        low = np.full(7, -8e-3, dtype=np.float32)
+        high = np.full(7, 8e-3, dtype=np.float32)
         low[-1] = np.float32(self.wavelength_bounds[0])
         high[-1] = np.float32(self.wavelength_bounds[1])
         return low, high
 
     def _default_action(self) -> NDArray[np.float64]:
+        # Default torques are already in action range [-8e-3, 8e-3]
         torques = self._default_torque_coeffs()
-        torque_actions = self._map_torque_to_action(torques)
-        return np.append(torque_actions, self.default_wavelength)
+        return np.append(torques, self.default_wavelength)
 
     def _augment_action(self, action: NDArray[np.float64]) -> NDArray[np.float64]:
         if action.shape[-1] != 7:
@@ -795,7 +783,8 @@ class VariableWavelengthContinuumSnakeEnv(BaseContinuumSnakeEnv):
                 "Expected 7 action dimensions (6 torque coefficients + wavelength)."
             )
         action = np.asarray(action, dtype=np.float64).copy()
-        torques = self._map_action_to_torque(action[:-1])
+        # Actions are already in torque range [-8e-3, 8e-3] (enforced by action space)
+        torques = action[:-1]
         min_w, max_w = self.wavelength_bounds
         wavelength = float(np.clip(action[-1], min_w, max_w))
         return np.append(torques, wavelength)

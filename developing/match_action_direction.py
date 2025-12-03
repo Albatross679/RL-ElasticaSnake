@@ -38,9 +38,11 @@ def generate_diverse_actions(n_samples: int = 200, action_dim: int = 6) -> np.nd
         action_dim: Dimension of action space (6 for FixedWavelengthContinuumSnakeEnv)
     
     Returns:
-        Array of shape (n_samples, action_dim) with actions in range [-1, 1]
+        Array of shape (n_samples, action_dim) with actions in range [-8e-3, 8e-3]
     """
     actions = []
+    action_min = -8e-3
+    action_max = 8e-3
     
     # Strategy 1: Latin Hypercube Sampling (LHS) - 40% of samples
     n_lhs = int(0.4 * n_samples)
@@ -49,28 +51,28 @@ def generate_diverse_actions(n_samples: int = 200, action_dim: int = 6) -> np.nd
             from scipy.stats import qmc
             sampler = qmc.LatinHypercube(d=action_dim, seed=42)
             lhs_samples = sampler.random(n=n_lhs)
-            # Scale from [0, 1] to [-1, 1]
-            lhs_actions = 2 * lhs_samples - 1
+            # Scale from [0, 1] to [-8e-3, 8e-3]
+            lhs_actions = action_min + lhs_samples * (action_max - action_min)
             actions.append(lhs_actions)
         except ImportError:
             # Fallback to random sampling if scipy.stats.qmc is not available
             print("Warning: scipy.stats.qmc not available, using random sampling instead")
-            random_actions = np.random.uniform(-1, 1, size=(n_lhs, action_dim))
+            random_actions = np.random.uniform(action_min, action_max, size=(n_lhs, action_dim))
             actions.append(random_actions)
     
     # Strategy 2: Random uniform sampling - 30% of samples
     n_random = int(0.3 * n_samples)
     if n_random > 0:
-        random_actions = np.random.uniform(-1, 1, size=(n_random, action_dim))
+        random_actions = np.random.uniform(action_min, action_max, size=(n_random, action_dim))
         actions.append(random_actions)
     
     # Strategy 3: Corner cases (extreme values) - 10% of samples
     n_corners = int(0.1 * n_samples)
     if n_corners > 0:
         corner_actions = []
-        # Generate corners: all combinations of -1, 0, 1 for each dimension
-        # Limit to avoid too many combinations (2^6 = 64 corners)
-        corner_values = [-1.0, -0.5, 0.0, 0.5, 1.0]
+        # Generate corners: all combinations of extreme values for each dimension
+        # Limit to avoid too many combinations
+        corner_values = [action_min, -4e-3, 0.0, 4e-3, action_max]
         for _ in range(min(n_corners, len(corner_values) ** action_dim)):
             corner = np.random.choice(corner_values, size=action_dim)
             corner_actions.append(corner)
@@ -79,7 +81,7 @@ def generate_diverse_actions(n_samples: int = 200, action_dim: int = 6) -> np.nd
     # Strategy 4: Grid sampling (coarse grid) - 10% of samples
     n_grid = int(0.1 * n_samples)
     if n_grid > 0:
-        grid_values = np.linspace(-1, 1, 5)  # 5 values per dimension
+        grid_values = np.linspace(action_min, action_max, 5)  # 5 values per dimension
         grid_actions = []
         # Sample from grid points
         for _ in range(n_grid):
@@ -96,7 +98,7 @@ def generate_diverse_actions(n_samples: int = 200, action_dim: int = 6) -> np.nd
             t = np.linspace(0, 2 * np.pi, action_dim)
             freq = np.random.uniform(0.5, 3.0)
             phase = np.random.uniform(0, 2 * np.pi)
-            amplitude = np.random.uniform(0.3, 1.0)
+            amplitude = np.random.uniform(0.3, 1.0) * action_max
             smooth_action = amplitude * np.sin(freq * t + phase)
             smooth_actions.append(smooth_action)
         actions.append(np.array(smooth_actions))
@@ -112,7 +114,7 @@ def generate_diverse_actions(n_samples: int = 200, action_dim: int = 6) -> np.nd
     elif len(all_actions) < n_samples:
         # Fill with random samples
         n_missing = n_samples - len(all_actions)
-        additional = np.random.uniform(-1, 1, size=(n_missing, action_dim))
+        additional = np.random.uniform(action_min, action_max, size=(n_missing, action_dim))
         all_actions = np.vstack([all_actions, additional])
     
     # Shuffle to mix strategies
@@ -192,58 +194,18 @@ def calculate_heading_direction(env, action: np.ndarray, n_steps: int = 1000) ->
     return result
 
 
-def determine_optimal_sample_size(action_dim: int = 6) -> int:
-    """
-    Determine optimal number of samples based on action space dimensionality.
-    
-    Uses a heuristic: for a d-dimensional space, we want enough samples to
-    cover the space reasonably well. Common approaches:
-    - 10-50 samples per dimension for low dimensions
-    - Statistical coverage: ~100-200 samples for 6D space
-    
-    Args:
-        action_dim: Dimension of action space
-    
-    Returns:
-        Recommended number of samples
-    """
-    # Base samples per dimension
-    samples_per_dim = 20
-    
-    # For 6D space, 20 * 6 = 120, but we want more for better coverage
-    # Use a power law: n_samples = base * (d^1.5)
-    base_samples = 30
-    n_samples = int(base_samples * (action_dim ** 1.2))
-    
-    # Clamp to reasonable range
-    n_samples = max(50, min(n_samples, 500))
-    
-    return n_samples
-
-
 def main():
     """Main function to run action-direction matching"""
     print("=" * 70)
     print("Action-Direction Matching Script")
     print("=" * 70)
     
-    # Determine optimal sample size
+    # Set sample size manually
     action_dim = 6  # For FixedWavelengthContinuumSnakeEnv
-    # n_samples = determine_optimal_sample_size(action_dim)
-    n_samples = 200
-    print(f"\nRecommended number of samples: {n_samples}")
+    n_samples = 2000  # Set this value manually as needed
+    print(f"\nNumber of samples: {n_samples}")
     print(f"Action space dimension: {action_dim}")
-    print(f"Action range: [-1, 1] for each dimension")
-    
-    # Ask user for confirmation or custom sample size
-    try:
-        user_input = input(f"\nUse {n_samples} samples? (y/n, or enter custom number): ").strip().lower()
-        if user_input == 'n':
-            n_samples = int(input("Enter number of samples: "))
-        elif user_input.isdigit():
-            n_samples = int(user_input)
-    except (ValueError, KeyboardInterrupt):
-        print("Using default sample size.")
+    print(f"Action range: [-8e-3, 8e-3] for each dimension")
     
     print(f"\nGenerating {n_samples} diverse action samples...")
     gen_start = time.time()
@@ -270,7 +232,7 @@ def main():
     
     # Run each action and collect results
     results = []
-    n_steps = 1000
+    n_steps = 2000
     
     print("\nRunning actions in environment...")
     print(f"Total actions to run: {len(actions)}")
@@ -412,12 +374,12 @@ def main():
     print(f"  Mean speed: {stats['speeds']['mean']:.4f}")
     print(f"  Mean heading direction: {stats['heading_directions']['mean']}")
     
-    # Print recommendation
+    # Print summary
     print(f"\n{'=' * 70}")
-    print("RECOMMENDATION:")
+    print("SUMMARY:")
     print(f"{'=' * 70}")
-    print(f"For a {action_dim}D action space, we recommend using {n_samples} samples.")
-    print(f"This provides good coverage while remaining computationally feasible.")
+    print(f"Action space dimension: {action_dim}D")
+    print(f"Number of samples used: {n_samples}")
     print(f"The script used multiple sampling strategies:")
     print(f"  - Latin Hypercube Sampling (40%)")
     print(f"  - Random sampling (30%)")
